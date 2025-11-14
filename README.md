@@ -132,4 +132,5 @@ breaker.on(CircuitEvents.FAILURE, (error) => {
   logger.warn('Falha na chamada (Circuit Breaker)', error.message);
 });
 ```
-## 📜 Licença (MIT)[./mit.licence]
+## 📜 Licença
+Distribuído sob a [Licença MIT](LICENSE).
