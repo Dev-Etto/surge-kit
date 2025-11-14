@@ -1,5 +1,5 @@
 {
-  "name": "relay",
+  "name": "surge-kit",
   "version": "0.1.0",
   "description": "A lightweight, zero-dependency, and modern Circuit Breaker library for Node.js.",
   "main": "dist/index.js",
@@ -29,12 +29,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Dev-Etto/relay.git"
+    "url": "git+https://github.com/Dev-Etto/surge-kit.git"
   },
   "bugs": {
-    "url": "https://github.com/Dev-Etto/relay/issues"
+    "url": "https://github.com/Dev-Etto/surge-kit/issues"
   },
-  "homepage": "https://github.com/Dev-Etto/relay#readme",
+  "homepage": "https://github.com/Dev-Etto/surge-kit#readme",
   "devDependencies": {
     "@types/jest": "^30.0.0",
     "@types/node": "^20.0.0",

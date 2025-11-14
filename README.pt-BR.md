@@ -1,35 +1,35 @@
-Read this in other languages: [English](./README.md)
+Leia isto em outros idiomas: [English](./README.md)
 
-# Relay
+# Surge Kit
 
-![NPM Version](https://img.shields.io/npm/v/relay)
-![Build Status](https://img.shields.io/github/actions/workflow/status/Dev-Etto/relay/.github/main.yml?branch=main)
-![Test Coverage](https://img.shields.io/codecov/c/github/Dev-Etto/relay)
-![NPM Downloads](https://img.shields.io/npm/dm/relay)
+![NPM Version](https://img.shields.io/npm/v/surge-kit)
+![Build Status](https://img.shields.io/github/actions/workflow/status/Dev-Etto/surge-kit/.github/main.yml?branch=main)
+![Test Coverage](https://img.shields.io/codecov/c/github/Dev-Etto/surge-kit)
+![NPM Downloads](https://img.shields.io/npm/dm/surge-kit)
 
 Uma biblioteca de Circuit Breaker **leve**, **zero-dependência** e **moderna** para Node.js, construída com foco em `async/await` e Typescript.
 
 ---
 
-## 💡 Por que usar o reley?
+## 💡 Por que usar o surge-kit?
 
 Proteger suas aplicações contra falhas em serviços externos não deveria exigir a instalação de bibliotecas pesadas e complexas.
 
 * **⚡ Leveza Extrema:** Zero dependências. O tamanho da biblioteca é minúsculo.
-* **🔌 API Moderna:** Uma API limpa e intuitiva que usa `async/await` e `...rest parameters`, sem `null`s estranhos.
+* **🔌 API Moderna:** Uma API limpa e intuitiva que usa `async/await` e `...rest parameters`.
 * **🛡️ Resiliência (Fail-Fast):** Impede que sua aplicação trave ao tentar chamar serviços que já estão offline, falhando rapidamente.
-* **🎧 Observabilidade:** Emitie eventos para que você possa logar e monitorar a saúde dos seus circuitos (usando `EventEmitter`).
+* **🎧 Observabilidade:** Emite eventos para que você possa logar e monitorar a saúde dos seus circuitos (usando `EventEmitter`).
 * **🎯 TypeScript Nativo:** Escrito inteiramente em **TypeScript** para uma excelente experiência de desenvolvimento.
 
 ## 📦 Instalação
 
 ```bash
-npm install reley
+npm install surge-kit
 ```
 
 ## 🚀 Uso Rápido
 ```ts
-import { Relay, RelayOpenError } from 'relay';
+import { Relay, RelayOpenError } from 'surge-kit';
 
 // 1. Crie uma instância
 const relay = new Relay();
@@ -109,29 +109,29 @@ const options = {
   executionTimeout: 5000, 
 };
 
-const breaker = new Relay(options);
+const relay = new Relay(options);
 ```
 
 ## 3. Observabilidade (Eventos)
 O **Relay** herda de **EventEmitter**. Você pode ouvir eventos para logar e monitorar o estado do circuito.
 
 ```ts
-import { RelayEvents } from 'relay';
+import { RelayEvents } from 'surge-kit';
 
-breaker.on(RelayEvents.OPEN, (error) => {
+relay.on(RelayEvents.OPEN, (error) => {
   logger.error(' CIRCUITO ABERTO. As chamadas serão bloqueadas.', error);
 });
 
-breaker.on(RelayEvents.CLOSE, () => {
+relay.on(RelayEvents.CLOSE, () => {
   logger.info(' CIRCUITO FECHADO. As chamadas voltaram ao normal.');
 });
 
-breaker.on(RelayEvents.HALF_OPEN, () => {
+relay.on(RelayEvents.HALF_OPEN, () => {
   logger.warn(' CIRCUITO MEIO-ABERTO. Testando a próxima chamada.');
 });
 
-breaker.on(RelayEvents.FAILURE, (error) => {
-  logger.warn('Falha na chamada (Circuit Breaker)', error.message);
+relay.on(RelayEvents.FAILURE, (error) => {
+  logger.warn('Falha na chamada (Relay)', error.message);
 });
 ```
 ## 📜 Licença

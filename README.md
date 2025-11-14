@@ -1,35 +1,35 @@
 Read this in other languages: [Português (Brasil)](./README.pt-BR.md)
 
-# Relay
+# Surge kit
 
-![NPM Version](https://img.shields.io/npm/v/relay)
-![Build Status](https://img.shields.io/github/actions/workflow/status/Dev-Etto/relay/.github/workflows/main.yml?branch=main)
-![Test Coverage](https://img.shields.io/codecov/c/github/Dev-Etto/relay)
-![NPM Downloads](https://img.shields.io/npm/dm/relay)
+![NPM Version](https://img.shields.io/npm/v/surge-kit)
+![Build Status](https://img.shields.io/github/actions/workflow/status/Dev-Etto/surge-kit/.github/workflows/main.yml?branch=main)
+![Test Coverage](https://img.shields.io/codecov/c/github/Dev-Etto/surge-kit)
+![NPM Downloads](https://img.shields.io/npm/dm/surge-kit)
 
 A **lightweight**, **zero-dependency**, and **modern** Circuit Breaker library for Node.js, built with a focus on `async/await` and TypeScript.
 
 ---
 
-## 💡 Why use Relay?
+## 💡 Why use surge-kit?
 
 Protecting your applications from failures in external services shouldn't require installing heavy and complex libraries.
 
-*   **⚡ Extremely Lightweight:** Zero dependencies. The library size is tiny.
-*   **🔌 Modern API:** A clean and intuitive API that uses `async/await` and `...rest parameters`.
-*   **🛡️ Resilience (Fail-Fast):** Prevents your application from hanging while trying to call services that are already offline by failing quickly.
-*   **🎧 Observability:** Emits events so you can log and monitor the health of your circuits (using `EventEmitter`).
-*   **🎯 Native TypeScript:** Written entirely in TypeScript for an excellent developer experience.
+* **⚡ Extremely Lightweight:** Zero dependencies. The library size is tiny.
+* **🔌 Modern API:** A clean and intuitive API that uses `async/await` and `...rest parameters`.
+* **🛡️ Resilience (Fail-Fast):** Prevents your application from hanging while trying to call services that are already offline by failing quickly.
+* **🎧 Observability:** Emits events so you can log and monitor the health of your circuits (using `EventEmitter`).
+* **🎯 Native TypeScript:** Written entirely in TypeScript for an excellent developer experience.
 
 ## 📦 Installation
 
 ```bash
-npm install relay
+npm install surge-kit
 ```
 
 ## 🚀 Quick Start
 ```ts
-import { Relay, RelayOpenError } from 'relay';
+import { Relay, RelayOpenError } from 'surge-kit';
 
 // 1. Create an instance
 const relay = new Relay();
@@ -94,7 +94,7 @@ const result = await relay.run(
   { value: 100 } // 'data' argument
 );
 ```
-## 2. Configuration new Relay(options)
+## 2. Configuration **new Relay(options)**
 You can customize the breaker's behavior in the constructor.
 
 ```ts
@@ -109,29 +109,29 @@ const options = {
   executionTimeout: 5000, 
 };
 
-const breaker = new Relay(options);
+const relay = new Relay(options);
 ```
 
 ## 3. Observability (Events)
 **Relay** extends **EventEmitter**. You can listen for events to log and monitor the circuit's state.
 
 ```ts
-import { RelayEvents } from 'relay';
+import { RelayEvents } from 'surge-kit';
 
-breaker.on(RelayEvents.OPEN, (error) => {
+relay.on(RelayEvents.OPEN, (error) => {
   logger.error(' CIRCUIT OPEN. Calls will be blocked.', error);
 });
 
-breaker.on(RelayEvents.CLOSE, () => {
+relay.on(RelayEvents.CLOSE, () => {
   logger.info(' CIRCUIT CLOSED. Calls are back to normal.');
 });
 
-breaker.on(RelayEvents.HALF_OPEN, () => {
+relay.on(RelayEvents.HALF_OPEN, () => {
   logger.warn(' CIRCUIT HALF-OPEN. Testing the next call.');
 });
 
-breaker.on(RelayEvents.FAILURE, (error) => {
-  logger.warn('Call failed (Circuit Breaker)', error.message);
+relay.on(RelayEvents.FAILURE, (error) => {
+  logger.warn('Call failed (Relay)', error.message);
 });
 ```
 
