@@ -31,7 +31,7 @@ export interface CircuitBreakerOptions {
    * The time in milliseconds the circuit stays OPEN before transitioning to HALF_OPEN.
    * @default 30000 (30s)
    */
-  cooldownPeriod?: number;
+  coolDownPeriod?: number;
 
   /**
    * The maximum time in milliseconds the function can run before being considered a failure.
