@@ -3,25 +3,26 @@ import {
   RelayOptions,
   RelayEvents,
   RelayState,
+  InternalOptions,
 } from './types';
 import { RelayOpenError } from './errors';
 
 export class Relay extends EventEmitter {
   #state: RelayState = RelayState.CLOSED;
-  #failureCount: number = 0;
-  #lastFailureTime: number = 0;
+  #failureCount = 0;
+  #lastFailureTime = 0;
   #coolDownTimer: NodeJS.Timeout | null = null;
-  readonly #options: Required<RelayOptions>;
+  readonly #options: InternalOptions;
 
-  constructor(options: RelayOptions = {}) {
+constructor(options: RelayOptions = {}) {
     super();
 
     this.#options = {
       failureThreshold: options.failureThreshold ?? 5,
       coolDownPeriod: options.coolDownPeriod ?? 30000,
       executionTimeout: options.executionTimeout ?? 10000,
-    };
-  }
+      onFallback: options.onFallback ?? null,
+    };}
 
   /**
    * Executes a function protected by the Relay.
@@ -32,18 +33,28 @@ export class Relay extends EventEmitter {
     fn: T,
     ...args: Parameters<T>
   ): Promise<ReturnType<T>> {
+
     if (this.#state === RelayState.OPEN) {
-      throw new RelayOpenError();
+      const openError = new RelayOpenError();
+
+      if (this.#options.onFallback) {
+        return this.#options.onFallback(openError);
+      }
+
+      throw openError;
     }
 
     try {
       const result = await this.#runWithTimeout(fn, args);
-
       this.#handleSuccess();
-
       return result;
     } catch (error) {
+
       this.#handleFailure(error as Error);
+
+      if (this.#options.onFallback) {
+        return this.#options.onFallback(error as Error);
+      }
 
       throw error;
     }

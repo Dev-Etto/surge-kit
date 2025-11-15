@@ -94,28 +94,45 @@ const resultado = await relay.run(
   { valor: 100 } // argumento 'dados'
 );
 ```
-## 2. Configuração new Relay(options)
-Você pode personalizar o comportamento do disjuntor no construtor.
+### 2. Configuração `new Relay(options)`
+Você pode personalizar o comportamento do disjuntor passando um objeto de opções para o construtor.
 
-| Option               | Type     | Default | Descrição                                                                                |
-| -------------------- | -------- | ------- | ---------------------------------------------------------------------------------------- |
-| `failureThreshold`   | `number` | `5`     | O número de falhas consecutivas necessário para abrir o circuito.                        |
-| `coolDownPeriod`     | `number` | `30000` | O tempo em milissegundos que o circuito permanece `OPEN` antes de ir para `HALF_OPEN`.   |
-| `executionTimeout`   | `number` | `10000` | O tempo máximo em milissegundos que a função pode executar antes de ser considerada uma falha. |
+| Opção | Tipo | Padrão | Descrição |
+| :--- | :--- | :--- | :--- |
+| `failureThreshold` | `number` | `5` | O número de falhas consecutivas para abrir o circuito. |
+| `coolDownPeriod` | `number` | `30000` | O tempo em milissegundos que o circuito fica `OPEN` antes de ir para `HALF_OPEN`. |
+| `executionTimeout` | `number` | `10000` | O tempo máximo em milissegundos que a função pode executar antes de ser considerada uma falha. |
+| `onFallback` | `(err: Error) => Promise<any>` | `null` | Uma função de contingência (fallback) para executar quando o circuito está `OPEN` ou uma chamada falha. |
+
+**Exemplo:**
+
+Se uma função `onFallback` for fornecida, o `relay.run()` irá executá-la em vez de lançar um erro. Isso permite que você sirva dados de um cache ou uma resposta padrão.
 
 ```ts
+// (Exemplo: Uma função para buscar dados do cache)
+async function buscarFreteDoCache() {
+  return { preco: 10.00, fonte: 'cache' };
+}
+
 const options = {
-  // 3 falhas seguidas abrem o circuito (Default: 5)
-  failureThreshold: 3, 
-  
-  // 10s de cooldown antes de tentar de novo (Default: 30000ms)
-  coolDownPeriod: 10000, 
-  
-  // Timeout de 5s para a execução da função (Default: 10000ms)
-  executionTimeout: 5000, 
+  failureThreshold: 2,
+  coolDownPeriod: 10000,     // 10 segundos
+  executionTimeout: 5000,  // 5 segundos
+  onFallback: (error) => {
+    // Loga o erro
+    logger.warn(`Fallback do Relay ativado: ${error.message}`);
+    // Retorna os dados do cache
+    return buscarFreteDoCache();
+  }
 };
 
 const relay = new Relay(options);
+
+// Agora, se calcularFrete falhar 2 vezes,
+// chamadas subsequentes irão automaticamente rodar buscarFreteDoCache()
+// em vez de lançar um RelayOpenError.
+const frete = await relay.run(calcularFrete, '01001-000');
+console.log('Frete:', frete); // { preco: 10.00, fonte: 'cache' }
 ```
 
 ## 3. Observabilidade (Eventos)

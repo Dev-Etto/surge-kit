@@ -15,5 +15,6 @@ module.exports = {
     jest: true,
   },
   rules: {
+    '@typescript-eslint/no-explicit-any': 'off',
   },
 };

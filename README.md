@@ -94,29 +94,47 @@ const result = await relay.run(
   { value: 100 } // 'data' argument
 );
 ```
-## 2. Configuration **new Relay(options)**
-You can customize the breaker's behavior in the constructor.
 
-| Option               | Type     | Default | Description                                                                      |
-| -------------------- | -------- | ------- | -------------------------------------------------------------------------------- |
-| `failureThreshold`   | `number` | `5`     | The number of consecutive failures needed to open the circuit.                   |
-| `coolDownPeriod`     | `number` | `30000` | The time in milliseconds the circuit stays `OPEN` before moving to `HALF_OPEN`.  |
-| `executionTimeout`   | `number` | `10000` | The maximum time in milliseconds the function can run before being considered a failure. |
+### 2. Configuration `new Relay(options)`
+
+You can customize the breaker's behavior by passing an options object to the constructor.
+
+| Option | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `failureThreshold` | `number` | `5` | The number of consecutive failures needed to open the circuit. |
+| `coolDownPeriod` | `number` | `30000` | The time in milliseconds the circuit stays `OPEN` before moving to `HALF_OPEN`. |
+| `executionTimeout` | `number` | `10000` | The maximum time in milliseconds the function can run before being considered a failure. |
+| `onFallback` | `(err: Error) => Promise<any>` | `null` | A fallback function to execute when the circuit is `OPEN` or a call fails. |
+
+**Example:**
+
+If an `onFallback` function is provided, `relay.run()` will execute it instead of throwing an error. This allows you to serve cached data or a default response.
 
 ```ts
+// (Example: A function to get cached data)
+async function getCachedShipping() {
+  return { price: 10.00, source: 'cache' };
+}
+
 const options = {
-  // 3 consecutive failures open the circuit (Default: 5)
-  failureThreshold: 3, 
-  
-  // 10s cooldown before retrying (Default: 30000ms)
-  coolDownPeriod: 10000, 
-  
-  // 5s timeout for the function execution (Default: 10000ms)
-  executionTimeout: 5000, 
+  failureThreshold: 2,
+  coolDownPeriod: 10000,     // 10 seconds
+  executionTimeout: 5000,  // 5 seconds
+  onFallback: (error) => {
+    // Log the error
+    logger.warn(`Relay fallback activated due to: ${error.message}`);
+    // Return the cached data
+    return getCachedShipping();
+  }
 };
 
 const relay = new Relay(options);
-```
+
+// Now, if calculateShipping fails 2 times,
+// subsequent calls will automatically run getCachedShipping()
+// instead of throwing a RelayOpenError.
+const shippingCost = await relay.run(calculateShipping, '01001-000');
+console.log('Shipping:', shippingCost); // { price: 10.00, source: 'cache' }
 
 ## 3. Observability (Events)
 **Relay** extends **EventEmitter**. You can listen for events to log and monitor the circuit's state.
