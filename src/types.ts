@@ -51,3 +51,19 @@ export interface RelayOptions {
    */
   onFallback?: (error: Error) => Promise<any>;
 }
+
+/**
+ * A snapshot of the relay's metrics.
+ */
+export interface RelayMetrics {
+  /** The current state of the relay. */
+  state: RelayState;
+  /** Total number of successful calls. */
+  successes: number;
+  /** Total number of failed calls (including timeouts). */
+  failures: number;
+  /** Total number of calls that timed out. */
+  timeouts: number;
+  /** The sum of successful and failed calls. */
+  total: number;
+}

@@ -157,6 +157,42 @@ relay.on(RelayEvents.FAILURE, (error) => {
   logger.warn('Falha na chamada (Relay)', error.message);
 });
 ```
+## 4. Métricas e Saúde
+
+O `surge-kit` rastreia métricas internas de sucessos, falhas e timeouts, permitindo que você monitore a saúde do seu circuit breaker. Você pode obter essas métricas usando o método `getMetrics()`.
+
+```typescript
+const relay = new Relay();
+
+// Após algumas chamadas...
+const metrics = relay.getMetrics();
+console.log(metrics);
+/*
+{
+  state: 'CLOSED',
+  successes: 10,
+  failures: 2,
+  timeouts: 1,
+  total: 12
+}
+*/
+```
+
+O método `getMetrics()` retorna um objeto com a seguinte estrutura:
+
+-   `state`: O estado atual do relay (`CLOSED`, `OPEN`, ou `HALF-OPEN`).
+-   `successes`: O número total de chamadas bem-sucedidas.
+-   `failures`: O número total de chamadas que falharam (incluindo timeouts).
+-   `timeouts`: O número total de chamadas que excederam o tempo limite.
+-   `total`: A soma de `successes` e `failures`.
+
+Isso é particularmente útil para expor a saúde dos seus serviços através de um endpoint de métricas, por exemplo, com Express:
+
+```typescript
+server.get('/metrics/meu-servico', (req, res) => {
+  res.json(relay.getMetrics());
+});
+```
 ## 📜 Licença
 Distribuído sob a [Licença MIT](LICENSE).
 

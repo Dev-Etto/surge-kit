@@ -4,14 +4,19 @@ import {
   RelayEvents,
   RelayState,
   InternalOptions,
+  RelayMetrics,
 } from './types';
 import { RelayOpenError } from './errors';
 
 export class Relay extends EventEmitter {
-  #state: RelayState = RelayState.CLOSED;
   #failureCount = 0;
   #lastFailureTime = 0;
+  #successCount = 0;
+  #totalFailureCount = 0;
+  #timeoutCount = 0;
+  #state: RelayState = RelayState.CLOSED;
   #coolDownTimer: NodeJS.Timeout | null = null;
+
   readonly #options: InternalOptions;
 
 constructor(options: RelayOptions = {}) {
@@ -64,6 +69,7 @@ constructor(options: RelayOptions = {}) {
    * Handles a successful execution.
    */
   #handleSuccess() {
+    this.#successCount++;
     this.#failureCount = 0;
 
     if (this.#state === RelayState.HALF_OPEN) {
@@ -77,6 +83,7 @@ constructor(options: RelayOptions = {}) {
    * Handles a failed execution.
    */
   #handleFailure(error: Error) {
+    this.#totalFailureCount++;
     this.#failureCount++;
     this.emit(RelayEvents.FAILURE, error);
 
@@ -99,6 +106,7 @@ constructor(options: RelayOptions = {}) {
 
     const timeoutPromise = new Promise<never>((_, reject) => {
       setTimeout(() => {
+        this.#timeoutCount++;
         reject(new Error('Execution timed out'));
       }, this.#options.executionTimeout);
     });
@@ -150,5 +158,18 @@ constructor(options: RelayOptions = {}) {
 
   public get lastFailureTime(): number {
     return this.#lastFailureTime;
+  }
+
+  /**
+   * Returns a snapshot of the relay's current metrics.
+   */
+  public getMetrics(): RelayMetrics {
+    return {
+      state: this.#state,
+      successes: this.#successCount,
+      failures: this.#totalFailureCount,
+      timeouts: this.#timeoutCount,
+      total: this.#successCount + this.#totalFailureCount,
+    };
   }
 }
