@@ -9,6 +9,10 @@ export const RelayState = {
 
 export type RelayState = (typeof RelayState)[keyof typeof RelayState];
 
+export type InternalOptions = Required<Omit<RelayOptions, 'onFallback'>> & {
+  onFallback: ((error: Error) => Promise<any>) | null;
+};
+
 /**
  * Events emitted by the Relay instance.
  */
@@ -38,4 +42,12 @@ export interface RelayOptions {
    * @default 10000 (10s)
    */
   executionTimeout?: number;
+
+/**
+   * A fallback function to execute when the circuit is OPEN
+   * or when a call fails.
+   * It receives the error that caused the failure.
+   * @default null
+   */
+  onFallback?: (error: Error) => Promise<any>;
 }

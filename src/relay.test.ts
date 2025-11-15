@@ -98,4 +98,49 @@ describe('Relay', () => {
     expect(relay.lastFailureTime).toBeGreaterThan(0);
     expect(relay.state).toBe(RelayState.OPEN);
   });
+
+  it('should call onFallback and not throw when circuit is OPEN', async () => {
+    const fallbackFn = jest.fn(async () => {
+      return 'fallback-result';
+    });
+    
+    relay = new Relay({
+      failureThreshold: 1,
+      onFallback: fallbackFn,
+    });
+
+    await expect(relay.run(mockFailureFn)).resolves.toBe('fallback-result');
+    expect(relay.state).toBe(RelayState.OPEN);
+    expect(fallbackFn).toHaveBeenCalledTimes(1);
+
+    fallbackFn.mockClear();
+
+    await expect(relay.run(mockSuccessFn)).resolves.toBe('fallback-result');
+
+    expect(fallbackFn).toHaveBeenCalledTimes(1);
+    expect(fallbackFn).toHaveBeenCalledWith(expect.any(RelayOpenError));
+
+    expect(mockSuccessFn).not.toHaveBeenCalled();
+  });
+
+  it('should call onFallback on a regular failure and not throw', async () => {
+
+    const fallbackFn = jest.fn(async () => {
+      return 'fallback-on-fail';
+    });
+
+    relay = new Relay({
+      failureThreshold: 5,
+      onFallback: fallbackFn,
+    });
+
+    await expect(relay.run(mockFailureFn)).resolves.toBe('fallback-on-fail');
+
+    expect(fallbackFn).toHaveBeenCalledTimes(1);
+    expect(fallbackFn).toHaveBeenCalledWith(expect.any(Error));
+    expect(fallbackFn).not.toHaveBeenCalledWith(expect.any(RelayOpenError));
+
+
+    expect(relay.state).toBe(RelayState.CLOSED);
+  });
 });
