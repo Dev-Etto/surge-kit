@@ -143,4 +143,63 @@ describe('Relay', () => {
 
     expect(relay.state).toBe(RelayState.CLOSED);
   });
+
+    it('should initialize metrics with zero values', () => {
+    const relay = new Relay();
+    const metrics = relay.getMetrics();
+
+    expect(metrics.successes).toBe(0);
+    expect(metrics.failures).toBe(0);
+    expect(metrics.timeouts).toBe(0);
+    expect(metrics.total).toBe(0);
+    expect(metrics.state).toBe(RelayState.CLOSED);
+  });
+
+  it('should increment success count on successful calls', async () => {
+    const successfulCall = jest.fn().mockResolvedValue('OK');
+    const relay = new Relay();
+
+    await relay.run(successfulCall);
+    await relay.run(successfulCall);
+
+    const metrics = relay.getMetrics();
+    expect(metrics.successes).toBe(2);
+    expect(metrics.failures).toBe(0);
+    expect(metrics.total).toBe(2);
+  });
+
+  it('should increment failure count on failed calls', async () => {
+    const failingCall = jest.fn().mockRejectedValue(new Error('Failure'));
+    const relay = new Relay({ failureThreshold: 5 });
+
+    try {
+      await relay.run(failingCall);
+    } catch (e) {
+    }
+    try {
+      await relay.run(failingCall);
+    } catch (e) {
+    }
+
+    const metrics = relay.getMetrics();
+    expect(metrics.failures).toBe(2);
+    expect(metrics.successes).toBe(0);
+    expect(metrics.total).toBe(2);
+  });
+
+  it('should increment timeout and failure counts when calls time out', async () => {
+    const slowCall = jest.fn(
+      () => new Promise(resolve => setTimeout(() => resolve('OK'), 200)),
+    );
+    const relay = new Relay({ executionTimeout: 100 });
+
+    const promise = relay.run(slowCall);
+    jest.advanceTimersByTime(101);
+    await expect(promise).rejects.toThrow('Execution timed out');
+
+    const metrics = relay.getMetrics();
+    expect(metrics.timeouts).toBe(1);
+    expect(metrics.failures).toBe(1);
+    expect(metrics.total).toBe(1);
+  });
 });

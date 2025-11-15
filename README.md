@@ -159,6 +159,43 @@ relay.on(RelayEvents.FAILURE, (error) => {
 });
 ```
 
+## 4. Metrics and Health
+
+The `surge-kit` It tracks internal metrics of successes, failures, and timeouts, allowing you to monitor the health of your circuit breaker. You can obtain these metrics using the method `getMetrics()`.
+
+```typescript
+const relay = new Relay();
+
+// After a few calls...
+const metrics = relay.getMetrics();
+console.log(metrics);
+/*
+{
+  state: 'CLOSED',
+  successes: 10,
+  failures: 2,
+  timeouts: 1,
+  total: 12
+}
+*/
+```
+
+The method `getMetrics()` returns an object with the following structure:
+
+-   `state`: The current state of the relay (`CLOSED`, `OPEN`, or `HALF-OPEN`).
+-   `successes`: The total number of successful calls.
+-   `failures`: The total number of failed calls (including timeouts).
+-   `timeouts`: The total number of calls that exceeded the time limit.
+-   `total`: The sum of `successes` the `failures`.
+
+This is particularly useful for exposing the health of your services through a metrics endpoint, for example, with Express:
+
+```typescript
+server.get('/metrics/my-service', (req, res) => {
+  res.json(relay.getMetrics());
+});
+```
+
 ## 📜 License
 Distributed under the [MIT License](LICENSE).
 
