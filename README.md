@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./assets/surge-kit-banner1.png" alt="Surge Kit Banner" width="500">
+</p>
+
 Read this in other languages: [Português (Brasil)](./README.pt-BR.md)
 
 # Surge Kit
@@ -135,6 +139,7 @@ const relay = new Relay(options);
 // instead of throwing a RelayOpenError.
 const shippingCost = await relay.run(calculateShipping, '01001-000');
 console.log('Shipping:', shippingCost); // { price: 10.00, source: 'cache' }
+```
 
 ## 3. Observability (Events)
 **Relay** extends **EventEmitter**. You can listen for events to log and monitor the circuit's state.
