@@ -8,25 +8,28 @@ import {
 } from './types';
 import { RelayOpenError } from './errors';
 
-export class Relay extends EventEmitter {
+export class Relay<TFallback = any> extends EventEmitter {
   #failureCount = 0;
   #lastFailureTime = 0;
   #successCount = 0;
   #totalFailureCount = 0;
   #timeoutCount = 0;
   #state: RelayState = RelayState.CLOSED;
+  #consecutiveOpenCount = 0;
   #coolDownTimer: NodeJS.Timeout | null = null;
 
-  readonly #options: InternalOptions;
+  readonly #options: InternalOptions<TFallback>;
 
-constructor(options: RelayOptions = {}) {
+  constructor(options: RelayOptions<TFallback> = {}) {
     super();
 
     this.#options = {
       failureThreshold: options.failureThreshold ?? 5,
       coolDownPeriod: options.coolDownPeriod ?? 30000,
       executionTimeout: options.executionTimeout ?? 10000,
-      onFallback: options.onFallback ?? null,
+      useExponentialBackoff: options.useExponentialBackoff ?? false,
+      maxCooldown: options.maxCooldown ?? 600000,
+      onFallback: (options.onFallback as any) ?? null,
     };}
 
   /**
@@ -37,7 +40,7 @@ constructor(options: RelayOptions = {}) {
   public async run<T extends (...args: any[]) => Promise<any>>(
     fn: T,
     ...args: Parameters<T>
-  ): Promise<ReturnType<T>> {
+  ): Promise<Awaited<ReturnType<T>> | TFallback> {
 
     if (this.#state === RelayState.OPEN) {
       const openError = new RelayOpenError();
@@ -118,13 +121,28 @@ constructor(options: RelayOptions = {}) {
    * Opens the relay (changes state to OPEN) and schedules the cooldown.
    */
   #open(error: Error) {
+    this.#consecutiveOpenCount++;
     this.#state = RelayState.OPEN;
     this.#lastFailureTime = Date.now();
     this.emit(RelayEvents.OPEN, error);
 
+    const coolDownPeriod = this.#calculateCooldown();
+
     this.#coolDownTimer = setTimeout(() => {
       this.#halfOpen();
-    }, this.#options.coolDownPeriod);
+    }, coolDownPeriod);
+  }
+
+  /**
+   * Calculates the cooldown period, applying exponential backoff if enabled.
+   */
+  #calculateCooldown(): number {
+    if (!this.#options.useExponentialBackoff) {
+      return this.#options.coolDownPeriod;
+    }
+    const multiplier = 2 ** (this.#consecutiveOpenCount - 1);
+    const backoffCooldown = this.#options.coolDownPeriod * multiplier;
+    return Math.min(backoffCooldown, this.#options.maxCooldown);
   }
 
   /**
@@ -132,6 +150,7 @@ constructor(options: RelayOptions = {}) {
    */
   #close() {
     this.#state = RelayState.CLOSED;
+    this.#consecutiveOpenCount = 0;
     this.#failureCount = 0;
 
     if (this.#coolDownTimer) {

@@ -108,9 +108,30 @@ You can customize the breaker's behavior by passing an options object to the con
 | `failureThreshold` | `number` | `5` | The number of consecutive failures needed to open the circuit. |
 | `coolDownPeriod` | `number` | `30000` | The time in milliseconds the circuit stays `OPEN` before moving to `HALF_OPEN`. |
 | `executionTimeout` | `number` | `10000` | The maximum time in milliseconds the function can run before being considered a failure. |
-| `onFallback` | `(err: Error) => Promise<any>` | `null` | A fallback function to execute when the circuit is `OPEN` or a call fails. |
+| `useExponentialBackoff` | `boolean` | `false` | If `true`, the `coolDownPeriod` will increase exponentially after each consecutive failure. |
+| `maxCooldown` | `number` | `600000` | The maximum `coolDownPeriod` in milliseconds when using exponential backoff. |
+| onFallback` | `(err: Error) => Promise<TFallback>` | `null` | A fallback function to execute when the circuit is `OPEN` or a call fails. |
 
-**Example:**
+**Example with Exponential Backoff:**
+
+To avoid overwhelming an unstable service, you can enable exponential backoff. The `coolDownPeriod` will increase with each consecutive failure, giving the service more time to recover.
+
+```ts
+const options = {
+  failureThreshold: 3,
+  coolDownPeriod: 5000,        // Initial cooldown: 5s
+  useExponentialBackoff: true,
+  maxCooldown: 60000           // Maximum cooldown: 60s
+};
+
+const relay = new Relay(options);
+
+// With this configuration:
+// - 1st open: 5s cooldown.
+// - 2nd consecutive open: 10s cooldown.
+// - 3rd consecutive open: 20s cooldown (and so on, up to the 60s maximum).
+```
+**Example with `onFallback`:**
 
 If an `onFallback` function is provided, `relay.run()` will execute it instead of throwing an error. This allows you to serve cached data or a default response.
 
@@ -118,7 +139,7 @@ If an `onFallback` function is provided, `relay.run()` will execute it instead o
 // (Example: A function to get cached data)
 async function getCachedShipping() {
   return { price: 10.00, source: 'cache' };
-}
+};
 
 const options = {
   failureThreshold: 2,

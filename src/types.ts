@@ -9,9 +9,9 @@ export const RelayState = {
 
 export type RelayState = (typeof RelayState)[keyof typeof RelayState];
 
-export type InternalOptions = Required<Omit<RelayOptions, 'onFallback'>> & {
-  onFallback: ((error: Error) => Promise<any>) | null;
-};
+export type InternalOptions<TFallback = any> = Required<
+  Omit<RelayOptions<TFallback>, 'onFallback'>
+> & { onFallback: ((error: Error) => Promise<TFallback>) | null };
 
 /**
  * Events emitted by the Relay instance.
@@ -24,7 +24,7 @@ export const RelayEvents = {
   FAILURE: 'failure',
 } as const;
 
-export interface RelayOptions {
+export interface RelayOptions<TFallback = any> {
   /**
    * The number of consecutive failures before opening the relay.
    * @default 5
@@ -43,13 +43,26 @@ export interface RelayOptions {
    */
   executionTimeout?: number;
 
-/**
+  /**
+   * If true, the cooldown period will increase exponentially after each
+   * consecutive failure.
+   * @default false
+   */
+  useExponentialBackoff?: boolean;
+
+  /**
+   * The maximum cooldown period in milliseconds when using exponential backoff.
+   * @default 600000 (10 minutes)
+   */
+  maxCooldown?: number;
+
+  /**
    * A fallback function to execute when the circuit is OPEN
    * or when a call fails.
    * It receives the error that caused the failure.
    * @default null
    */
-  onFallback?: (error: Error) => Promise<any>;
+  onFallback?: (error: Error) => Promise<TFallback>;
 }
 
 /**
