@@ -13,6 +13,8 @@ const mockFailureFn = jest.fn(async () => {
 describe('Relay', () => {
 
   let relay: Relay;
+  const failureThreshold = 2;
+  const coolDownPeriod = 1000; 
 
   beforeEach(() => {
     mockSuccessFn.mockClear();
@@ -144,6 +146,31 @@ describe('Relay', () => {
     expect(relay.state).toBe(RelayState.CLOSED);
   });
 
+  it('should correctly type the onFallback return value when using generics', async () => {
+    interface FallbackResponse {
+      status: string;
+      data: { id: number };
+    }
+
+    const fallbackData: FallbackResponse = {
+      status: 'cached',
+      data: { id: 123 },
+    };
+
+    const fallbackFn = jest.fn(async (): Promise<FallbackResponse> => {
+      return fallbackData;
+    });
+
+    const typedRelay = new Relay<FallbackResponse>({
+      failureThreshold: 1,
+      onFallback: fallbackFn,
+    });
+
+    const result = await typedRelay.run(mockFailureFn);
+
+    expect(result).toEqual(fallbackData);
+  });
+
     it('should initialize metrics with zero values', () => {
     const relay = new Relay();
     const metrics = relay.getMetrics();
@@ -202,4 +229,79 @@ describe('Relay', () => {
     expect(metrics.failures).toBe(1);
     expect(metrics.total).toBe(1);
   });
+
+    it('should not use exponential backoff by default', async () => {
+      const relay = new Relay({ failureThreshold, coolDownPeriod });
+
+      await expect(relay.run(mockFailureFn)).rejects.toThrow();
+      await expect(relay.run(mockFailureFn)).rejects.toThrow();
+      expect(relay.state).toBe(RelayState.OPEN);
+
+      jest.advanceTimersByTime(coolDownPeriod);
+      expect(relay.state).toBe(RelayState.HALF_OPEN);
+    });
+
+    it('should increase cooldown period exponentially on consecutive opens', async () => {
+      const relay = new Relay({
+        failureThreshold,
+        coolDownPeriod,
+        useExponentialBackoff: true,
+      });
+
+      await expect(relay.run(mockFailureFn)).rejects.toThrow('Failure');
+      await expect(relay.run(mockFailureFn)).rejects.toThrow('Failure');
+      expect(relay.state).toBe(RelayState.OPEN);
+
+      jest.advanceTimersByTime(coolDownPeriod);
+      expect(relay.state).toBe(RelayState.HALF_OPEN);
+
+      await expect(relay.run(mockFailureFn)).rejects.toThrow('Failure');
+      expect(relay.state).toBe(RelayState.OPEN);
+
+      jest.advanceTimersByTime(coolDownPeriod);
+      expect(relay.state).toBe(RelayState.OPEN);
+
+      jest.advanceTimersByTime(coolDownPeriod);
+      expect(relay.state).toBe(RelayState.HALF_OPEN);
+    });
+
+    it('should not exceed maxCooldown when using exponential backoff', async () => {
+      const maxCooldown = 2500;
+      const relay = new Relay({
+        failureThreshold: 1,
+        coolDownPeriod,
+        useExponentialBackoff: true,
+        maxCooldown,
+      });
+
+      await expect(relay.run(mockFailureFn)).rejects.toThrow();
+      jest.advanceTimersByTime(1000);
+      await expect(relay.run(mockFailureFn)).rejects.toThrow();
+
+      jest.advanceTimersByTime(2000);
+      await expect(relay.run(mockFailureFn)).rejects.toThrow();
+
+      jest.advanceTimersByTime(maxCooldown - 1);
+      expect(relay.state).toBe(RelayState.OPEN);
+
+      jest.advanceTimersByTime(1);
+      expect(relay.state).toBe(RelayState.HALF_OPEN); 
+    });
+
+    it('should reset the backoff counter after a successful call closes the circuit', async () => {
+      const relay = new Relay({
+        failureThreshold: 1,
+        coolDownPeriod,
+        useExponentialBackoff: true,
+      });
+
+      await expect(relay.run(mockFailureFn)).rejects.toThrow(); 
+      jest.advanceTimersByTime(coolDownPeriod);
+      await expect(relay.run(mockSuccessFn)).resolves.toBe('success');
+      await expect(relay.run(mockFailureFn)).rejects.toThrow();  
+
+
+      jest.advanceTimersByTime(coolDownPeriod);
+      expect(relay.state).toBe(RelayState.HALF_OPEN);
+    });
 });

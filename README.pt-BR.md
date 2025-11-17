@@ -106,9 +106,31 @@ Você pode personalizar o comportamento do disjuntor passando um objeto de opç�
 | `failureThreshold` | `number` | `5` | O número de falhas consecutivas para abrir o circuito. |
 | `coolDownPeriod` | `number` | `30000` | O tempo em milissegundos que o circuito fica `OPEN` antes de ir para `HALF_OPEN`. |
 | `executionTimeout` | `number` | `10000` | O tempo máximo em milissegundos que a função pode executar antes de ser considerada uma falha. |
-| `onFallback` | `(err: Error) => Promise<any>` | `null` | Uma função de contingência (fallback) para executar quando o circuito está `OPEN` ou uma chamada falha. |
+| `useExponentialBackoff` | `boolean` | `false` | Se `true`, o `coolDownPeriod` aumentará exponencialmente após cada falha consecutiva. |
+| `maxCooldown` | `number` | `600000` | O `coolDownPeriod` máximo em milissegundos ao usar o backoff exponencial. |
+| `onFallback` | `(err: Error) => Promise<TFallback>` | `null` | Uma função de contingência (fallback) para executar quando o circuito está `OPEN` ou uma chamada falha. |
 
-**Exemplo:**
+
+**Exemplo com Backoff Exponencial:**
+
+Para evitar sobrecarregar um serviço instável, você pode habilitar o backoff exponencial. O tempo de `coolDownPeriod` aumentará a cada falha consecutiva, dando mais tempo para o serviço se recuperar.
+
+```ts
+const options = {
+  failureThreshold: 3,
+  coolDownPeriod: 5000,        // Cooldown inicial: 5s
+  useExponentialBackoff: true,
+  maxCooldown: 60000           // Cooldown máximo: 60s
+};
+
+const relay = new Relay(options);
+
+// Com esta configuração:
+// - 1ª abertura do circuito: cooldown de 5s.
+// - 2ª abertura consecutiva: cooldown de 10s.
+// - 3ª abertura consecutiva: cooldown de 20s (e assim por diante, até 60s).
+```
+**Exemplo com `onFallback`:**
 
 Se uma função `onFallback` for fornecida, o `relay.run()` irá executá-la em vez de lançar um erro. Isso permite que você sirva dados de um cache ou uma resposta padrão.
 
@@ -116,7 +138,7 @@ Se uma função `onFallback` for fornecida, o `relay.run()` irá executá-la em 
 // (Exemplo: Uma função para buscar dados do cache)
 async function buscarFreteDoCache() {
   return { preco: 10.00, fonte: 'cache' };
-}
+};
 
 const options = {
   failureThreshold: 2,
