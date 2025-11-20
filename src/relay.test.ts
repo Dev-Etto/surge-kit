@@ -23,6 +23,7 @@ describe('Relay', () => {
   });
 
   afterEach(() => {
+    relay.cleanup();
     Relay.clearDefault();
     jest.clearAllTimers();
   });
@@ -206,11 +207,13 @@ describe('Relay', () => {
 
     try {
       await relay.run(failingCall);
-    } catch (e) {
+    } catch (_) {
+      // Expected to fail
     }
     try {
       await relay.run(failingCall);
-    } catch (e) {
+    } catch (_) {
+      // Expected to fail
     }
 
     const metrics = relay.getMetrics();
@@ -342,5 +345,95 @@ describe('Relay Register', () => {
     relay.register('test-obj', p, f);
     
     await expect(relay.run(p.exec)).resolves.toBe('fallback');
+  });
+});
+
+describe('Relay Cleanup', () => {
+  let relay: Relay;
+
+  beforeEach(() => {
+    relay = new Relay({ failureThreshold: 1, coolDownPeriod: 5000 });
+  });
+
+  afterEach(() => {
+    relay.cleanup();
+  });
+
+  it('should clear cooldown timer when cleanup is called', async () => {
+    // Force the circuit to open
+    await expect(relay.run(mockFailureFn)).rejects.toThrow('Failure');
+    expect(relay.state).toBe(RelayState.OPEN);
+
+    // Call cleanup before the cooldown period ends
+    relay.cleanup();
+
+    // Advance timers past the cooldown period
+    jest.advanceTimersByTime(5000);
+
+    // The circuit should still be OPEN because the timer was cleared
+    expect(relay.state).toBe(RelayState.OPEN);
+  });
+
+  it('should handle cleanup when no timer is active', () => {
+    // Should not throw when there's no active timer
+    expect(() => relay.cleanup()).not.toThrow();
+    expect(relay.state).toBe(RelayState.CLOSED);
+  });
+
+  it('should allow multiple cleanup calls safely', async () => {
+    // Force the circuit to open
+    await expect(relay.run(mockFailureFn)).rejects.toThrow('Failure');
+    expect(relay.state).toBe(RelayState.OPEN);
+
+    // Multiple cleanup calls should be safe
+    expect(() => {
+      relay.cleanup();
+      relay.cleanup();
+      relay.cleanup();
+    }).not.toThrow();
+  });
+
+  it('should prevent transition to HALF_OPEN after cleanup', async () => {
+    // Force the circuit to open
+    await expect(relay.run(mockFailureFn)).rejects.toThrow('Failure');
+    expect(relay.state).toBe(RelayState.OPEN);
+
+    // Cleanup before cooldown completes
+    relay.cleanup();
+
+    // Advance time well past the cooldown period
+    jest.advanceTimersByTime(10000);
+
+    // Circuit should remain OPEN (not transition to HALF_OPEN)
+    expect(relay.state).toBe(RelayState.OPEN);
+  });
+
+  it('should be safe to call cleanup in CLOSED state', () => {
+    expect(relay.state).toBe(RelayState.CLOSED);
+    expect(() => relay.cleanup()).not.toThrow();
+    expect(relay.state).toBe(RelayState.CLOSED);
+  });
+
+  it('should cleanup timer set during exponential backoff', async () => {
+    const relayWithBackoff = new Relay({
+      failureThreshold: 1,
+      coolDownPeriod: 1000,
+      useExponentialBackoff: true,
+    });
+
+    // Open the circuit
+    await expect(relayWithBackoff.run(mockFailureFn)).rejects.toThrow('Failure');
+    expect(relayWithBackoff.state).toBe(RelayState.OPEN);
+
+    // Cleanup the timer
+    relayWithBackoff.cleanup();
+
+    // Advance time past the exponential backoff period
+    jest.advanceTimersByTime(5000);
+
+    // Should still be OPEN because timer was cleared
+    expect(relayWithBackoff.state).toBe(RelayState.OPEN);
+
+    relayWithBackoff.cleanup();
   });
 });
