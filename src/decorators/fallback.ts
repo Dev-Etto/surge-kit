@@ -1,4 +1,3 @@
-import { RelayOpenError } from '../errors';
 
 /**
  * Decorator to define a fallback method in case of failure.

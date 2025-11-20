@@ -17,7 +17,7 @@
     "prepublishOnly": "npm run test && npm run build",
     "publish:npm": "npm publish --access=public"
   },
-"keywords": [
+  "keywords": [
     "circuit-breaker",
     "resilience",
     "fault-tolerance",
@@ -51,6 +51,10 @@
   "devDependencies": {
     "@types/jest": "^30.0.0",
     "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.47.0",
+    "@typescript-eslint/parser": "^8.47.0",
+    "eslint": "^8.57.1",
+    "eslint-plugin-jest": "^29.1.0",
     "jest": "^30.2.0",
     "ts-jest": "^29.4.5",
     "typescript": "^5.0.0"
