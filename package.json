@@ -17,7 +17,7 @@
     "prepublishOnly": "npm run test && npm run build",
     "publish:npm": "npm publish --access=public"
   },
-  "keywords": [
+"keywords": [
     "circuit-breaker",
     "resilience",
     "fault-tolerance",
@@ -31,7 +31,12 @@
     "decorators",
     "backend",
     "nodejs",
-    "api-wrapper"
+    "api-wrapper",
+    "production-ready",
+    "exponential-backoff",
+    "fallback",
+    "metrics",
+    "network-protection"
   ],
   "author": "João Neto - contato.devetto@gmail.com",
   "license": "MIT",
