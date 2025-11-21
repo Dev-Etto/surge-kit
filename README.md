@@ -11,7 +11,7 @@ Read this in other languages: [Português (Brasil)](./README.pt-BR.md)
 ![Test Coverage](https://img.shields.io/codecov/c/github/Dev-Etto/surge-kit)
 ![NPM Downloads](https://img.shields.io/npm/dm/surge-kit)
 
-A **lightweight**, **zero-dependency**, and **modern** Circuit Breaker library for Node.js, built with a focus on `async/await` and TypeScript.
+A **lightweight**, **zero-dependency**, and **modern** Circuit Breaker library for Node.js, built with a focus on `async/await` and TypeScript. Protect your services with a clean programmatic API, elegant **TypeScript decorators** (`@UseRelay`, `@Fallback`), or flexible fallback registration—choose the approach that fits your architecture.
 
 ---
 
@@ -21,6 +21,7 @@ Protecting your applications from failures in external services shouldn't requir
 
 * **⚡ Extremely Lightweight:** Zero dependencies. The library size is tiny.
 * **🔌 Modern API:** A clean and intuitive API that uses `async/await` and `...rest parameters`.
+* **✨ TypeScript Decorators:** Use `@UseRelay` and `@Fallback` decorators for clean, declarative circuit breaker protection.
 * **🛡️ Resilience (Fail-Fast):** Prevents your application from hanging while trying to call services that are already offline by failing quickly.
 * **🎧 Observability:** Emits events so you can log and monitor the health of your circuits (using `EventEmitter`).
 * **🎯 Native TypeScript:** Written entirely in TypeScript for an excellent developer experience.
@@ -32,6 +33,8 @@ npm install surge-kit
 ```
 
 ## 🚀 Quick Start
+
+### Basic Usage
 ```ts
 import { Relay, RelayOpenError } from 'surge-kit';
 
@@ -56,6 +59,183 @@ try {
     console.error('Call failed:', error.message);
   }
 }
+```
+
+### Using Default Instance (Recommended for Single Relay Apps)
+```ts
+import { Relay, UseRelay } from 'surge-kit';
+
+// 1. Create and set as default
+const relay = new Relay();
+Relay.setDefault(relay);
+
+// 2. Use decorators without passing the instance
+class ShippingService {
+  @UseRelay() // No argument needed!
+  async calculateShipping(zipCode: string) {
+    // ...your fetch() call logic
+  }
+}
+```
+
+## ✨ Using Decorators
+
+You can now use TypeScript decorators to protect your methods cleanly.
+
+**Prerequisite:** Enable `experimentalDecorators: true` in your `tsconfig.json`.
+
+### `@UseRelay(relayInstance?)`
+
+Wraps a method or all methods in a class with `relay.run()`. The relay instance parameter is **optional** - if not provided, it uses `Relay.getDefault()`.
+
+**Method Decoration:**
+```ts
+import { Relay, UseRelay } from 'surge-kit';
+
+const myRelay = new Relay();
+
+class ApiService {
+  @UseRelay(myRelay)
+  async fetchData(id: number) {
+    // This method is automatically protected
+    return await fetch(`/api/data/${id}`);
+  }
+}
+```
+
+**Class Decoration:**
+```ts
+import { Relay, UseRelay } from 'surge-kit';
+
+const myRelay = new Relay();
+
+@UseRelay(myRelay)
+class ApiService {
+  async fetchUsers() {
+    // Automatically protected
+  }
+
+  async fetchPosts() {
+    // Automatically protected
+  }
+}
+```
+
+**Using Default Instance:**
+```ts
+import { Relay, UseRelay } from 'surge-kit';
+
+// Set up once in your app initialization
+const myRelay = new Relay();
+Relay.setDefault(myRelay);
+
+// Now you can use @UseRelay without arguments!
+@UseRelay()
+class ApiService {
+  async fetchData() {
+    // Protected with default relay
+  }
+}
+
+// Also works on individual methods
+class UserService {
+  @UseRelay()
+  async getUser(id: number) {
+    // Protected with default relay
+  }
+}
+```
+
+### `@Fallback(methodName | function)`
+
+Defines a fallback to be executed if the method fails (or if the circuit is open).
+- **String:** Name of a method in the same class.
+- **Function:** A standalone function.
+
+```ts
+class ApiService {
+  @Fallback('fallbackData') // Must be ABOVE @UseRelay to catch errors properly
+  @UseRelay(myRelay)
+  async riskyOperation(id: number) {
+    throw new Error('Boom!');
+  }
+
+  async fallbackData(error: Error, id: number) {
+    return { id, status: 'fallback', error: error.message };
+  }
+}
+```
+
+> [!IMPORTANT]
+> **Decorator Order Matters!** Always place `@Fallback` **above** `@UseRelay`. Decorators execute from bottom to top, so `@Fallback` (outer) must wrap `@UseRelay` (inner) to properly catch errors including `RelayOpenError`.
+
+### `@RelayClass(relayInstance)`
+
+**Note:** `@RelayClass` is now superseded by class-level `@UseRelay`, but remains available for backward compatibility.
+
+Protects **all methods** in a class with the circuit breaker.
+
+```ts
+import { Relay, RelayClass } from 'surge-kit';
+
+const myRelay = new Relay();
+
+@RelayClass(myRelay)
+class ApiService {
+  async fetchUsers() {
+    // Automatically protected
+  }
+
+  async fetchPosts() {
+    // Automatically protected
+  }
+}
+```
+
+### `@FallbackClass(FallbackClass)`
+Defines a fallback class. If methods fail, the corresponding methods from the fallback class are called.
+
+```ts
+import { RelayClass, FallbackClass } from 'surge-kit';
+
+class FallbackApi {
+  async getData(error: Error) {
+    return 'Cached data';
+  }
+}
+
+@RelayClass(myRelay)
+@FallbackClass(FallbackApi)
+class PrimaryApi {
+  async getData() {
+    throw new Error('Service down');
+  }
+}
+
+const api = new PrimaryApi();
+await api.getData(); // Returns 'Cached data'
+```
+
+## 🔄 Fallback without Decorators (`relay.register`)
+
+If you can't use decorators, you can register a fallback implementation for your methods.
+
+```ts
+const relay = new Relay();
+
+const primary = {
+  async getData() { throw new Error('Fail'); }
+};
+
+const fallback = {
+  async getData() { return 'Cached Data'; }
+};
+
+// Registers fallback.getData as the fallback for primary.getData
+relay.register(primary, fallback);
+
+// When you run primary.getData, it will use the fallback on failure
+const result = await relay.run(primary.getData); // Returns 'Cached Data'
 ```
 
 ## 📚 API and Usage Patterns
@@ -110,7 +290,7 @@ You can customize the breaker's behavior by passing an options object to the con
 | `executionTimeout` | `number` | `10000` | The maximum time in milliseconds the function can run before being considered a failure. |
 | `useExponentialBackoff` | `boolean` | `false` | If `true`, the `coolDownPeriod` will increase exponentially after each consecutive failure. |
 | `maxCooldown` | `number` | `600000` | The maximum `coolDownPeriod` in milliseconds when using exponential backoff. |
-| onFallback` | `(err: Error) => Promise<TFallback>` | `null` | A fallback function to execute when the circuit is `OPEN` or a call fails. |
+| `onFallback` | `(err: Error) => Promise<TFallback>` | `null` | A fallback function to execute when the circuit is `OPEN` or a call fails. |
 
 **Example with Exponential Backoff:**
 
@@ -162,7 +342,71 @@ const shippingCost = await relay.run(calculateShipping, '01001-000');
 console.log('Shipping:', shippingCost); // { price: 10.00, source: 'cache' }
 ```
 
-## 3. Observability (Events)
+### 3. Default Instance API
+
+For applications using a single Relay instance, you can set it as the default to simplify decorator usage.
+
+#### `Relay.setDefault(instance: Relay)`
+Sets the global default Relay instance.
+
+```typescript
+const relay = new Relay({ failureThreshold: 3 });
+Relay.setDefault(relay);
+```
+
+#### `Relay.getDefault(): Relay`
+Gets the global default Relay instance. Throws an error if no default has been set.
+
+```typescript
+const relay = Relay.getDefault();
+```
+
+#### `Relay.clearDefault(): void`
+Clears the global default Relay instance. **Essential for test cleanup.**
+
+```typescript
+Relay.clearDefault();
+```
+
+#### `relay.cleanup(): void`
+Clears any pending cooldown timers. **Essential for preventing resource leaks in tests.**
+
+When a Relay circuit opens, it schedules a timer to transition to `HALF_OPEN` state after the cooldown period. If your tests create Relay instances that open circuits, these timers can persist and cause issues like:
+- Jest warnings about timers not being cleared
+- Memory leaks in test suites
+- Unpredictable test behavior
+
+```typescript
+const relay = new Relay();
+// ... use relay in tests ...
+relay.cleanup(); // Clear any pending timers
+```
+
+> [!WARNING]
+> **Testing with Default Instance**: The default instance is global state. Always call `Relay.clearDefault()` in your test cleanup (e.g., `afterEach`) to prevent test pollution.
+
+**Example Test Setup:**
+```typescript
+describe('My Service', () => {
+  let relay: Relay;
+
+  beforeEach(() => {
+    relay = new Relay({ failureThreshold: 2 });
+    Relay.setDefault(relay);
+  });
+
+  afterEach(() => {
+    relay.cleanup();        // Clear any pending timers
+    Relay.clearDefault();   // Clear default instance
+  });
+
+  it('should work', async () => {
+    // Your tests here
+  });
+});
+```
+
+## 4. Observability (Events)
 **Relay** extends **EventEmitter**. You can listen for events to log and monitor the circuit's state.
 
 ```ts

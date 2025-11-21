@@ -11,10 +11,11 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
+    "clean": "rm -rf dist",
+    "build": "npm run clean && tsc",
     "test": "jest",
     "lint": "eslint src/**/*.ts",
-    "prepublishOnly": "npm run test && npm run build",
+    "prepublishOnly": "npm run lint && npm run test && npm run build",
     "publish:npm": "npm publish --access=public"
   },
   "keywords": [
@@ -23,7 +24,20 @@
     "fault-tolerance",
     "async",
     "typescript",
-    "zero-dependency"
+    "zero-dependency",
+    "microservices",
+    "reliability",
+    "stability",
+    "fail-fast",
+    "decorators",
+    "backend",
+    "nodejs",
+    "api-wrapper",
+    "production-ready",
+    "exponential-backoff",
+    "fallback",
+    "metrics",
+    "network-protection"
   ],
   "author": "João Neto - contato.devetto@gmail.com",
   "license": "MIT",
@@ -38,6 +52,10 @@
   "devDependencies": {
     "@types/jest": "^30.0.0",
     "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.47.0",
+    "@typescript-eslint/parser": "^8.47.0",
+    "eslint": "^8.57.1",
+    "eslint-plugin-jest": "^29.1.0",
     "jest": "^30.2.0",
     "ts-jest": "^29.4.5",
     "typescript": "^5.0.0"
