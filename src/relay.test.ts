@@ -499,6 +499,56 @@ describe('Relay HALF_OPEN trial call', () => {
   });
 });
 
+describe('Relay stale calls in HALF_OPEN', () => {
+  let relay: Relay;
+
+  afterEach(() => {
+    relay.cleanup();
+    jest.clearAllTimers();
+  });
+
+  const setup = async () => {
+    relay = new Relay({ failureThreshold: 1, coolDownPeriod: 1000, executionTimeout: 60000 });
+    let settleStale!: { resolve: (v: string) => void; reject: (e: Error) => void };
+    const stale = relay.run(
+      () => new Promise<string>((resolve, reject) => { settleStale = { resolve, reject }; })
+    );
+    await expect(relay.run(mockFailureFn)).rejects.toThrow('Failure');
+    jest.advanceTimersByTime(1000);
+    expect(relay.state).toBe(RelayState.HALF_OPEN);
+
+    let settleTrial!: { resolve: (v: string) => void; reject: (e: Error) => void };
+    const trial = relay.run(
+      () => new Promise<string>((resolve, reject) => { settleTrial = { resolve, reject }; })
+    );
+    return { stale, trial, settleStale, settleTrial };
+  };
+
+  it('should not close on a late success from a call started before the relay opened', async () => {
+    const { stale, trial, settleStale, settleTrial } = await setup();
+
+    settleStale.resolve('late');
+    await expect(stale).resolves.toBe('late');
+    expect(relay.state).toBe(RelayState.HALF_OPEN);
+
+    settleTrial.reject(new Error('trial failed'));
+    await expect(trial).rejects.toThrow('trial failed');
+    expect(relay.state).toBe(RelayState.OPEN);
+  });
+
+  it('should not reopen on a late failure from a call started before the relay opened', async () => {
+    const { stale, trial, settleStale, settleTrial } = await setup();
+
+    settleStale.reject(new Error('late'));
+    await expect(stale).rejects.toThrow('late');
+    expect(relay.state).toBe(RelayState.HALF_OPEN);
+
+    settleTrial.resolve('trial ok');
+    await expect(trial).resolves.toBe('trial ok');
+    expect(relay.state).toBe(RelayState.CLOSED);
+  });
+});
+
 describe('Relay Regressions', () => {
   let relay: Relay;
 
@@ -514,6 +564,18 @@ describe('Relay Regressions', () => {
     jest.advanceTimersByTime(200);
 
     expect(relay.getMetrics().timeouts).toBe(0);
+  });
+
+  it('should clamp durations that setTimeout cannot represent', async () => {
+    relay = new Relay({ failureThreshold: 1, coolDownPeriod: Infinity, executionTimeout: 2 ** 32 });
+
+    const slow = relay.run(() => new Promise((resolve) => setTimeout(() => resolve('done'), 100)));
+    jest.advanceTimersByTime(100);
+    await expect(slow).resolves.toBe('done');
+
+    await expect(relay.run(mockFailureFn)).rejects.toThrow('Failure');
+    jest.advanceTimersByTime(1000);
+    expect(relay.state).toBe(RelayState.OPEN);
   });
 
   it('should not leave execution timeout timers pending after a call settles', async () => {

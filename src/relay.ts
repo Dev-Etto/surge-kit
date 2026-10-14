@@ -7,6 +7,7 @@ import {
   RelayMetrics,
 } from './types';
 import { RelayOpenError, RelayTimeoutError } from './errors';
+import { clampTimerDelay } from './timers';
 
 export class Relay<TFallback = any> extends EventEmitter {
   private static defaultInstance: Relay | null = null;
@@ -162,16 +163,17 @@ export class Relay<TFallback = any> extends EventEmitter {
 
     // The trial call's outcome moves the relay to CLOSED or OPEN, so the flag
     // only needs resetting when HALF_OPEN is entered again.
-    if (this.#state === RelayState.HALF_OPEN) {
+    const isTrial = this.#state === RelayState.HALF_OPEN;
+    if (isTrial) {
       this.#trialInFlight = true;
     }
 
     try {
       const result = await this.#runWithTimeout(fn, args);
-      this.#handleSuccess();
+      this.#handleSuccess(isTrial);
       return result;
     } catch (error) {
-      this.#handleFailure(error as Error);
+      this.#handleFailure(error as Error, isTrial);
       return this.#executeFallback(fn, error as Error, args);
     }
   }
@@ -179,11 +181,13 @@ export class Relay<TFallback = any> extends EventEmitter {
   /**
    * Handles a successful execution.
    */
-  #handleSuccess() {
+  #handleSuccess(isTrial: boolean) {
     this.#successCount++;
     this.#failureCount = 0;
 
-    if (this.#state === RelayState.HALF_OPEN) {
+    // In HALF_OPEN only the trial call decides the outcome; calls that started
+    // before the relay opened and settle late do not.
+    if (this.#state === RelayState.HALF_OPEN && isTrial) {
       this.#close();
     }
 
@@ -193,7 +197,7 @@ export class Relay<TFallback = any> extends EventEmitter {
   /**
    * Handles a failed execution.
    */
-  #handleFailure(error: Error) {
+  #handleFailure(error: Error, isTrial: boolean) {
     this.#totalFailureCount++;
     this.#failureCount++;
     this.emit(RelayEvents.FAILURE, error);
@@ -201,7 +205,7 @@ export class Relay<TFallback = any> extends EventEmitter {
     // A failed trial call in HALF_OPEN reopens the relay immediately,
     // regardless of the consecutive failure count.
     if (
-      this.#state === RelayState.HALF_OPEN ||
+      (this.#state === RelayState.HALF_OPEN && isTrial) ||
       (this.#state === RelayState.CLOSED &&
         this.#failureCount >= this.#options.failureThreshold)
     ) {
@@ -223,7 +227,7 @@ export class Relay<TFallback = any> extends EventEmitter {
       timer = setTimeout(() => {
         this.#timeoutCount++;
         reject(new RelayTimeoutError(this.#options.executionTimeout));
-      }, this.#options.executionTimeout);
+      }, clampTimerDelay(this.#options.executionTimeout));
     });
 
     // Clear the timer once the race settles so it neither counts a timeout
@@ -267,7 +271,7 @@ export class Relay<TFallback = any> extends EventEmitter {
     this.#coolDownTimer = setTimeout(() => {
       this.#coolDownTimer = null;
       this.#halfOpen();
-    }, coolDownPeriod);
+    }, clampTimerDelay(coolDownPeriod));
     // The cooldown alone should not keep the process alive.
     this.#coolDownTimer.unref();
   }

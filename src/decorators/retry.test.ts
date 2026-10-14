@@ -108,6 +108,18 @@ describe('@Retry', () => {
     expect(() => Retry(options as any)).toThrow(message);
   });
 
+  it('should clamp delays that setTimeout cannot represent', async () => {
+    const fn = jest.fn().mockRejectedValue(new Error('fail'));
+    class Service {
+      @Retry({ attempts: 2, delay: 3e9 })
+      async call() { return fn(); }
+    }
+
+    void new Service().call().catch(() => {});
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
   describe('with @UseRelay', () => {
     let relay: Relay;
 
@@ -158,6 +170,49 @@ describe('@Retry', () => {
       expect(fn).toHaveBeenCalledTimes(3);
       expect(relay.getMetrics().failures).toBe(1);
       expect(relay.state).toBe(RelayState.OPEN);
+    });
+
+    it('should stop retrying once the relay timed out the call', async () => {
+      const timeoutRelay = new Relay({ failureThreshold: 10, executionTimeout: 100 });
+      const fn = jest.fn(
+        () => new Promise((_, reject) => setTimeout(() => reject(new Error('slow failure')), 60))
+      );
+
+      class Service {
+        @Retry({ attempts: 5, delay: 10 })
+        @UseRelay(timeoutRelay)
+        async call() { return fn(); }
+      }
+
+      const outcome = new Service().call().catch((error: Error) => error.name);
+      await jest.advanceTimersByTimeAsync(100);
+      expect(await outcome).toBe('RelayTimeoutError');
+      expect(fn).toHaveBeenCalledTimes(2);
+
+      // The attempt in flight when the relay gave up fails later, and no
+      // further attempt is started.
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(fn).toHaveBeenCalledTimes(2);
+      timeoutRelay.cleanup();
+    });
+
+    it('should not start another attempt if the relay times out during the delay', async () => {
+      const timeoutRelay = new Relay({ failureThreshold: 10, executionTimeout: 100 });
+      const fn = jest.fn().mockRejectedValue(new Error('fast failure'));
+
+      class Service {
+        @Retry({ attempts: 3, delay: 200 })
+        @UseRelay(timeoutRelay)
+        async call() { return fn(); }
+      }
+
+      const outcome = new Service().call().catch((error: Error) => error.name);
+      await jest.advanceTimersByTimeAsync(100);
+      expect(await outcome).toBe('RelayTimeoutError');
+
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(fn).toHaveBeenCalledTimes(1);
+      timeoutRelay.cleanup();
     });
 
     it('should not retry while the relay is OPEN', async () => {

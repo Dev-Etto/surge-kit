@@ -1,3 +1,4 @@
+import { clampTimerDelay } from '../timers';
 import { decorateMethod, LayerRank } from './pipeline';
 import { assertInteger, assertNumber } from './validate';
 
@@ -36,7 +37,8 @@ export interface RetryOptions {
  * Retries run inside `@UseRelay`, whatever the decorator order: the relay only
  * counts a failure once every attempt has failed, and nothing is retried while
  * the relay is OPEN. The relay's `executionTimeout` applies to the whole
- * sequence of attempts, including the delays.
+ * sequence of attempts, including the delays; once it expires no further
+ * attempt is started (the attempt already running cannot be cancelled).
  *
  * The decorated method always returns a Promise.
  *
@@ -64,22 +66,31 @@ export function Retry(options: RetryOptions): any {
 
   return function (
     _target: any,
-    _propertyKey: string,
-    descriptor: PropertyDescriptor
+    propertyKey: unknown,
+    descriptor?: PropertyDescriptor
   ): any {
-    return decorateMethod(descriptor, LayerRank.RETRY, (next) =>
-      async function (this: any, ...args: any[]) {
+    return decorateMethod('Retry', propertyKey, descriptor, LayerRank.RETRY, (next) =>
+      async (invocation) => {
         for (let attempt = 1; ; attempt++) {
           try {
-            return await next.apply(this, args);
+            return await next(invocation);
           } catch (error) {
-            if (attempt >= attempts || !retryIf(error as Error, attempt)) {
+            // Stop once the caller stopped waiting (e.g. the relay timed out),
+            // so abandoned calls don't keep hitting the dependency.
+            if (
+              attempt >= attempts ||
+              invocation.abandoned ||
+              !retryIf(error as Error, attempt)
+            ) {
               throw error;
             }
 
             const wait = Math.min(delay * backoff ** (attempt - 1), maxDelay);
             if (wait > 0) {
-              await new Promise((resolve) => setTimeout(resolve, wait));
+              await new Promise((resolve) => setTimeout(resolve, clampTimerDelay(wait)));
+            }
+            if (invocation.abandoned) {
+              throw error;
             }
           }
         }

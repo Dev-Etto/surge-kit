@@ -1,4 +1,4 @@
-import { callWithErrorHandler, decorateClassMethods, LayerRank } from './pipeline';
+import { assertLegacyDecorator, callWithErrorHandler, decorateClassMethods, LayerRank } from './pipeline';
 
 /**
  * Class decorator to define a fallback class.
@@ -44,23 +44,23 @@ import { callWithErrorHandler, decorateClassMethods, LayerRank } from './pipelin
 export function FallbackClass<T extends { new (...args: any[]): {} }>(
   FallbackClass: T
 ): any {
-  return function <U extends { new (...args: any[]): {} }>(constructor: U): any {
+  return function <U extends { new (...args: any[]): {} }>(constructor: U, context?: unknown): any {
+    assertLegacyDecorator('FallbackClass', context);
     // One fallback instance per primary instance, created on first failure.
     const fallbackInstanceSymbol = Symbol('fallbackInstance');
 
-    decorateClassMethods(constructor, LayerRank.FALLBACK, (methodName) => (next) =>
-      function (this: any, ...args: any[]) {
-        return callWithErrorHandler(next, this, args, (error) => {
-          this[fallbackInstanceSymbol] ??= new FallbackClass();
-          const fallbackInstance = this[fallbackInstanceSymbol];
-          const method = fallbackInstance[methodName];
+    decorateClassMethods(constructor, LayerRank.FALLBACK, (methodName) => (next) => (invocation) =>
+      callWithErrorHandler(next, invocation, (error) => {
+        const { thisArg, args } = invocation;
+        thisArg[fallbackInstanceSymbol] ??= new FallbackClass();
+        const fallbackInstance = thisArg[fallbackInstanceSymbol];
+        const method = fallbackInstance[methodName];
 
-          if (typeof method !== 'function') {
-            throw error;
-          }
-          return method.call(fallbackInstance, error, ...args);
-        });
-      }
+        if (typeof method !== 'function') {
+          throw error;
+        }
+        return method.call(fallbackInstance, error, ...args);
+      })
     );
 
     return constructor;

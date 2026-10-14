@@ -28,27 +28,27 @@ import { callWithErrorHandler, decorateMethod, LayerRank } from './pipeline';
 export function Fallback(fallback: string | ((error: Error, ...args: any[]) => any)): any {
   return function (
     _target: any,
-    _propertyKey: string,
-    descriptor: PropertyDescriptor
+    propertyKey: unknown,
+    descriptor?: PropertyDescriptor
   ): any {
-    return decorateMethod(descriptor, LayerRank.FALLBACK, (next) =>
-      function (this: any, ...args: any[]) {
-        return callWithErrorHandler(next, this, args, (error) => {
-          if (typeof fallback === 'function') {
-            return fallback(error, ...args);
-          }
+    return decorateMethod('Fallback', propertyKey, descriptor, LayerRank.FALLBACK, (next) => (invocation) =>
+      callWithErrorHandler(next, invocation, (error) => {
+        const { thisArg, args } = invocation;
 
-          if (typeof fallback !== 'string') {
-            throw error;
-          }
+        if (typeof fallback === 'function') {
+          return fallback(error, ...args);
+        }
 
-          const fallbackMethod = this[fallback];
-          if (typeof fallbackMethod !== 'function') {
-            throw new Error(`Fallback method '${fallback}' not found on instance.`);
-          }
-          return fallbackMethod.apply(this, [error, ...args]);
-        });
-      }
+        if (typeof fallback !== 'string') {
+          throw error;
+        }
+
+        const fallbackMethod = thisArg[fallback];
+        if (typeof fallbackMethod !== 'function') {
+          throw new Error(`Fallback method '${fallback}' not found on instance.`);
+        }
+        return fallbackMethod.apply(thisArg, [error, ...args]);
+      })
     );
   };
 }

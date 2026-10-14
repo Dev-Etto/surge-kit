@@ -50,6 +50,19 @@ describe('@RateLimit', () => {
     await expect(service.call()).resolves.toBe('ok');
   });
 
+  it('should not be affected by the system clock moving backwards', async () => {
+    class Service {
+      @RateLimit({ limit: 1, windowMs: 1000 })
+      async call() { return 'ok'; }
+    }
+    const service = new Service();
+
+    await service.call();
+    jest.setSystemTime(Date.now() - 3600_000);
+    jest.advanceTimersByTime(1000);
+    await expect(service.call()).resolves.toBe('ok');
+  });
+
   it('should not consume the limit with rejected calls', async () => {
     class Service {
       @RateLimit({ limit: 1, windowMs: 1000 })

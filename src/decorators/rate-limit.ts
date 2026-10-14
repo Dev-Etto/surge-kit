@@ -1,4 +1,5 @@
 import { RateLimitExceededError } from '../errors';
+import { monotonicNow } from '../timers';
 import { decorateMethod, LayerRank } from './pipeline';
 import { assertInteger, assertNumber } from './validate';
 
@@ -41,25 +42,29 @@ export function RateLimit(options: RateLimitOptions): any {
 
   return function (
     _target: any,
-    _propertyKey: string,
-    descriptor: PropertyDescriptor
+    propertyKey: unknown,
+    descriptor?: PropertyDescriptor
   ): any {
     // Start times of the calls accepted within the current window, oldest first.
     const callTimes: number[] = [];
 
-    return decorateMethod(descriptor, LayerRank.RATE_LIMIT, (next) =>
-      async function (this: any, ...args: any[]) {
-        const now = Date.now();
+    return decorateMethod('RateLimit', propertyKey, descriptor, LayerRank.RATE_LIMIT, (next) =>
+      async (invocation) => {
+        const now = monotonicNow();
         while (callTimes.length > 0 && callTimes[0] <= now - windowMs) {
           callTimes.shift();
         }
 
         if (callTimes.length >= limit) {
-          throw new RateLimitExceededError(limit, windowMs, callTimes[0] + windowMs - now);
+          throw new RateLimitExceededError(
+            limit,
+            windowMs,
+            Math.ceil(callTimes[0] + windowMs - now)
+          );
         }
 
         callTimes.push(now);
-        return next.apply(this, args);
+        return next(invocation);
       }
     );
   };

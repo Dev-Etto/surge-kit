@@ -253,7 +253,7 @@ class ApiService {
 | `retryIf` | `(error, attempt) => boolean` | `() => true` | Retorne `false` para erros que não devem ser repetidos (ex.: erros de validação). |
 
 > [!NOTE]
-> As novas tentativas rodam sempre **dentro** do `@UseRelay`, então nada é repetido enquanto o circuito está `OPEN`. O `executionTimeout` do relay cobre toda a sequência de tentativas, incluindo as esperas, então dimensione-o de acordo.
+> As novas tentativas rodam sempre **dentro** do `@UseRelay`, então nada é repetido enquanto o circuito está `OPEN`. O `executionTimeout` do relay cobre toda a sequência de tentativas, incluindo as esperas, então dimensione-o de acordo. Depois que ele expira, nenhuma nova tentativa é iniciada.
 
 ### `@Bulkhead(options)`
 
@@ -275,6 +275,8 @@ class ServicoPagamento {
 | :--- | :--- | :--- | :--- |
 | `maxConcurrent` | `number` | — | Número máximo de chamadas rodando ao mesmo tempo. |
 | `maxQueue` | `number` | `0` | Chamadas que podem esperar uma vaga (FIFO). `0` rejeita assim que o limite é atingido. |
+
+Uma vaga é liberada quando a chamada retorna para quem a fez, inclusive quando o `@UseRelay` a encerra por timeout. A operação que estourou o tempo não pode ser cancelada e pode continuar rodando, mas segurar a vaga travaria o método para sempre se ela nunca terminasse.
 
 ### `@RateLimit(options)`
 
@@ -321,15 +323,15 @@ class ServicoProduto {
 
 | Opção | Tipo | Padrão | Descrição |
 | :--- | :--- | :--- | :--- |
-| `ttl` | `number` | — | Milissegundos que um resultado fica em cache. |
-| `key` | `(...args) => string` | `JSON.stringify(args)` | Monta a chave do cache a partir dos argumentos. |
+| `ttl` | `number` | — | Milissegundos que um resultado fica em cache (no máximo `2147483647`, cerca de 24,8 dias). |
+| `key` | `(...args) => string` | `defaultCacheKey` | Monta a chave do cache a partir dos argumentos. Lance um erro para pular o cache numa chamada. |
 | `maxSize` | `number` | `Infinity` | Máximo de entradas por instância; a usada há mais tempo é removida. |
 
 - Só resultados de sucesso entram no cache. Erros e resultados do `@Fallback` nunca entram.
 - Chamadas simultâneas com a mesma chave compartilham a mesma Promise pendente.
 - Um acerto no cache pula todas as outras camadas, então dados em cache continuam sendo servidos com o circuito `OPEN`.
 - Cada instância tem o próprio cache, e entradas expiradas são removidas automaticamente.
-- Se a chave não puder ser montada (ex.: argumentos circulares), a chamada passa sem cache.
+- A chave padrão (`defaultCacheKey`, exportada) é uma codificação JSON dos argumentos que diferencia `undefined`, `null`, `NaN`, `Infinity`, `-0` e bigints. Argumentos que ela não consegue codificar sem perder informação, como `Map`, `Set`, funções, symbols, objetos circulares e instâncias de classe sem propriedades próprias, fazem a chamada passar sem cache. Passe uma `key` para cachear esses casos.
 
 É um cache pequeno de resiliência, não um substituto para um armazenamento compartilhado como o Redis.
 
@@ -366,7 +368,7 @@ class ServicoCatalogo {
 
 ## 🔄 Fallback sem Decorators (`relay.register`)
 
-Se você não pode usar decorators, pode registrar uma implementação de fallback para seus métodos.
+Se você não pode usar decorators, pode registrar uma implementação de fallback para seus métodos. O `register` só vale para funções passadas direto para `relay.run`. Para métodos protegidos com `@UseRelay`, use `@Fallback` ou `@FallbackClass`.
 
 ```ts
 const relay = new Relay();
@@ -434,7 +436,7 @@ Você pode personalizar o comportamento do disjuntor passando um objeto de opç�
 | Opção | Tipo | Padrão | Descrição |
 | :--- | :--- | :--- | :--- |
 | `failureThreshold` | `number` | `5` | O número de falhas consecutivas para abrir o circuito. |
-| `coolDownPeriod` | `number` | `30000` | O tempo em milissegundos que o circuito fica `OPEN` antes de ir para `HALF_OPEN`. Em `HALF_OPEN` só uma chamada de teste passa, e as chamadas simultâneas são rejeitadas com `RelayOpenError` até ela terminar. |
+| `coolDownPeriod` | `number` | `30000` | O tempo em milissegundos que o circuito fica `OPEN` antes de ir para `HALF_OPEN`. Em `HALF_OPEN` só uma chamada de teste passa, e as chamadas simultâneas são rejeitadas com `RelayOpenError` até ela terminar. Só o resultado da chamada de teste fecha ou reabre o circuito. |
 | `executionTimeout` | `number` | `10000` | O tempo máximo em milissegundos que a função pode executar antes de ser considerada uma falha. Chamadas que excedem o tempo são rejeitadas com `RelayTimeoutError`. |
 | `useExponentialBackoff` | `boolean` | `false` | Se `true`, o `coolDownPeriod` aumentará exponencialmente após cada falha consecutiva. |
 | `maxCooldown` | `number` | `600000` | O `coolDownPeriod` máximo em milissegundos ao usar o backoff exponencial. |

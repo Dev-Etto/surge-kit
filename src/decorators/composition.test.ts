@@ -84,3 +84,92 @@ describe('Decorator pipeline', () => {
     await expect(service.getData()).resolves.toBe('fallback');
   });
 });
+
+describe('Decorator pipeline regressions', () => {
+  let relay: Relay;
+
+  beforeEach(() => {
+    relay = new Relay({ failureThreshold: 1, coolDownPeriod: 1000 });
+  });
+
+  afterEach(() => {
+    relay.cleanup();
+    jest.clearAllTimers();
+  });
+
+  it('should not change a decorated method shared with another class', async () => {
+    class Base {
+      @Retry({ attempts: 2 })
+      async run(): Promise<string> { throw new Error('base failure'); }
+    }
+
+    class BFallback {
+      async run() { return 'B-fallback'; }
+    }
+    class Mixin {}
+    Object.defineProperty(
+      Mixin.prototype,
+      'run',
+      Object.getOwnPropertyDescriptor(Base.prototype, 'run')!
+    );
+    UseRelay(relay)(Mixin);
+    FallbackClass(BFallback)(Mixin);
+
+    await expect(new Base().run()).rejects.toThrow('base failure');
+    expect(relay.getMetrics().total).toBe(0);
+    await expect((new Mixin() as Base).run()).resolves.toBe('B-fallback');
+    expect(relay.getMetrics().failures).toBe(1);
+  });
+
+  it('should not protect a method twice with class-level and method-level @UseRelay', async () => {
+    const methodRelay = new Relay({ failureThreshold: 5 });
+    const warnSpy = jest.spyOn(process, 'emitWarning').mockImplementation(() => {});
+
+    @UseRelay(relay)
+    class Service {
+      @UseRelay(methodRelay)
+      async own(): Promise<string> { throw new Error('fail'); }
+
+      async other(): Promise<string> { throw new Error('fail'); }
+    }
+    const service = new Service();
+
+    await expect(service.own()).rejects.toThrow('fail');
+    expect(methodRelay.getMetrics().failures).toBe(1);
+    expect(relay.getMetrics().failures).toBe(0);
+
+    await expect(service.other()).rejects.toThrow('fail');
+    expect(relay.getMetrics().failures).toBe(1);
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    warnSpy.mockRestore();
+    methodRelay.cleanup();
+  });
+
+  it('should treat a successful thenable without .catch as a success', async () => {
+    const thenable = { then: (resolve: (v: string) => void) => resolve('value') };
+    class Service {
+      @Fallback(() => 'fallback')
+      get(): any { return thenable; }
+    }
+
+    await expect(Promise.resolve(new Service().get())).resolves.toBe('value');
+  });
+
+  it('should explain that experimentalDecorators is required', () => {
+    const context = { kind: 'method', name: 'get' };
+    const method = async () => 'x';
+
+    expect(() => (UseRelay(relay) as any)(method, context)).toThrow('experimentalDecorators');
+    expect(() => (Retry({ attempts: 2 }) as any)(method, context)).toThrow('experimentalDecorators');
+    expect(() => (FallbackClass(class {}) as any)(class {}, { kind: 'class' })).toThrow(
+      'experimentalDecorators'
+    );
+  });
+
+  it('should reject decorating something that is not a method', () => {
+    expect(() => (Cache({ ttl: 1 }) as any)({}, 'field', undefined)).toThrow(
+      '@Cache can only be applied to methods.'
+    );
+  });
+});

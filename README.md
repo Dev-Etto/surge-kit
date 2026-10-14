@@ -253,7 +253,7 @@ class ApiService {
 | `retryIf` | `(error, attempt) => boolean` | `() => true` | Return `false` for errors that should not be retried (e.g. validation errors). |
 
 > [!NOTE]
-> Retries always run **inside** `@UseRelay`, so nothing is retried while the circuit is `OPEN`. The relay's `executionTimeout` covers the whole sequence of attempts, including the delays, so size it accordingly.
+> Retries always run **inside** `@UseRelay`, so nothing is retried while the circuit is `OPEN`. The relay's `executionTimeout` covers the whole sequence of attempts, including the delays, so size it accordingly. Once it expires, no further attempt is started.
 
 ### `@Bulkhead(options)`
 
@@ -275,6 +275,8 @@ class PaymentService {
 | :--- | :--- | :--- | :--- |
 | `maxConcurrent` | `number` | — | Maximum number of calls running at once. |
 | `maxQueue` | `number` | `0` | Calls allowed to wait for a free slot (FIFO). `0` rejects as soon as the limit is reached. |
+
+A slot is freed when the call returns to its caller, including when `@UseRelay` times it out. The timed-out operation can't be cancelled and may still be running, but holding its slot would lock the method for good if it never settles.
 
 ### `@RateLimit(options)`
 
@@ -321,15 +323,15 @@ class ProductService {
 
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `ttl` | `number` | — | Milliseconds a result stays cached. |
-| `key` | `(...args) => string` | `JSON.stringify(args)` | Builds the cache key from the arguments. |
+| `ttl` | `number` | — | Milliseconds a result stays cached (at most `2147483647`, about 24.8 days). |
+| `key` | `(...args) => string` | `defaultCacheKey` | Builds the cache key from the arguments. Throw to skip the cache for a call. |
 | `maxSize` | `number` | `Infinity` | Maximum entries per instance; the least recently used one is evicted. |
 
 - Only successful results are cached. Errors and `@Fallback` results never are.
 - Concurrent calls with the same key share the same pending Promise.
 - Cache hits skip every other layer, so cached data is still served while the circuit is `OPEN`.
 - Each instance has its own cache, and expired entries are removed automatically.
-- If the key can't be built (e.g. circular arguments), the call goes through uncached.
+- The default key (`defaultCacheKey`, exported) is a JSON encoding of the arguments that keeps `undefined`, `null`, `NaN`, `Infinity`, `-0` and bigints apart. Arguments it can't encode without losing information, such as `Map`, `Set`, functions, symbols, circular objects and class instances without own properties, make the call go through uncached. Pass a `key` to cache those.
 
 This is a small resilience cache, not a replacement for a shared store like Redis.
 
@@ -366,7 +368,7 @@ class CatalogService {
 
 ## 🔄 Fallback without Decorators (`relay.register`)
 
-If you can't use decorators, you can register a fallback implementation for your methods.
+If you can't use decorators, you can register a fallback implementation for your methods. `register` only applies to functions passed directly to `relay.run`. For methods protected with `@UseRelay`, use `@Fallback` or `@FallbackClass`.
 
 ```ts
 const relay = new Relay();
@@ -436,7 +438,7 @@ You can customize the breaker's behavior by passing an options object to the con
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `failureThreshold` | `number` | `5` | The number of consecutive failures needed to open the circuit. |
-| `coolDownPeriod` | `number` | `30000` | The time in milliseconds the circuit stays `OPEN` before moving to `HALF_OPEN`. In `HALF_OPEN` a single trial call is let through, and concurrent calls are rejected with `RelayOpenError` until it settles. |
+| `coolDownPeriod` | `number` | `30000` | The time in milliseconds the circuit stays `OPEN` before moving to `HALF_OPEN`. In `HALF_OPEN` a single trial call is let through, and concurrent calls are rejected with `RelayOpenError` until it settles. Only the trial call's result closes or reopens the circuit. |
 | `executionTimeout` | `number` | `10000` | The maximum time in milliseconds the function can run before being considered a failure. Timed-out calls reject with `RelayTimeoutError`. |
 | `useExponentialBackoff` | `boolean` | `false` | If `true`, the `coolDownPeriod` will increase exponentially after each consecutive failure. |
 | `maxCooldown` | `number` | `600000` | The maximum `coolDownPeriod` in milliseconds when using exponential backoff. |

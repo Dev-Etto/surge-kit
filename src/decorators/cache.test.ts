@@ -1,6 +1,6 @@
 import { Relay } from '../relay';
 import { RelayState } from '../types';
-import { Cache } from './cache';
+import { Cache, defaultCacheKey } from './cache';
 import { Fallback } from './fallback';
 import { UseRelay } from './use-relay';
 
@@ -172,9 +172,78 @@ describe('@Cache', () => {
     const service = new Service();
 
     await service.get();
-    jest.setSystemTime(Date.now() + 1000);
+    const now = performance.now();
+    const clock = jest.spyOn(performance, 'now').mockReturnValue(now + 1000);
     await service.get();
+    clock.mockRestore();
     expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it('should not be affected by system clock changes', async () => {
+    const fn = jest.fn(async () => 'value');
+    class Service {
+      @Cache({ ttl: 1000 })
+      async get() { return fn(); }
+    }
+    const service = new Service();
+
+    await service.get();
+    jest.setSystemTime(Date.now() + 3600_000);
+    await service.get();
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('should reject a ttl that setTimeout cannot represent', () => {
+    expect(() => Cache({ ttl: 2 ** 31 })).toThrow('"ttl" must be at most');
+    expect(() => Cache({ ttl: Infinity })).toThrow('"ttl" must be at most');
+    expect(() => Cache({ ttl: 2 ** 31 - 1 })).not.toThrow();
+  });
+
+  describe('default key', () => {
+    class Point {
+      constructor(public x: number, public y: number) {}
+    }
+    class Opaque {}
+
+    it.each([
+      ['null and undefined', [null], [undefined]],
+      ['a missing argument and undefined', [], [undefined]],
+      ['NaN and null', [NaN], [null]],
+      ['Infinity and -Infinity', [Infinity], [-Infinity]],
+      ['0 and -0', [0], [-0]],
+      ['a bigint and a string', [BigInt(1)], ['1']],
+      ['an undefined property and a missing one', [{ a: undefined }], [{}]],
+      ['different plain objects', [{ a: 1 }], [{ a: 2 }]],
+    ])('should tell apart %s', (_, first, second) => {
+      expect(defaultCacheKey(...first)).not.toBe(defaultCacheKey(...second));
+    });
+
+    it('should encode dates and class instances with own properties', () => {
+      expect(defaultCacheKey(new Date(0))).toBe(defaultCacheKey(new Date(0)));
+      expect(defaultCacheKey(new Date(0))).not.toBe(defaultCacheKey(new Date(1)));
+      expect(defaultCacheKey(new Point(1, 2))).not.toBe(defaultCacheKey(new Point(2, 1)));
+    });
+
+    it.each([
+      ['a Map', new Map([[1, 2]])],
+      ['a Set', new Set([1])],
+      ['a function', () => 1],
+      ['a symbol', Symbol('s')],
+      ['an instance without own properties', new Opaque()],
+    ])('should refuse %s so the call goes uncached', (_, value) => {
+      expect(() => defaultCacheKey(value)).toThrow(TypeError);
+    });
+
+    it('should not return the result of another call for lossy arguments', async () => {
+      class Service {
+        @Cache({ ttl: 1000 })
+        async size(collection: Map<number, number>) { return collection.size; }
+      }
+      const service = new Service();
+
+      await expect(service.size(new Map([[1, 2]]))).resolves.toBe(1);
+      await expect(service.size(new Map())).resolves.toBe(0);
+    });
   });
 
   it('should serve cache hits without going through an OPEN relay', async () => {

@@ -24,6 +24,11 @@ export interface BulkheadOptions {
  * before `@UseRelay`, so they are not counted as relay failures, and they can
  * be handled by `@Fallback`. Queued calls start in FIFO order.
  *
+ * A slot is freed when the call returns to its caller, including when
+ * `@UseRelay` times it out. The timed-out operation itself cannot be
+ * cancelled and may still be running, but holding its slot would lock the
+ * method for good if it never settles.
+ *
  * The limit is shared by all instances of the class. The decorated method
  * always returns a Promise.
  *
@@ -41,8 +46,8 @@ export function Bulkhead(options: BulkheadOptions): any {
 
   return function (
     _target: any,
-    _propertyKey: string,
-    descriptor: PropertyDescriptor
+    propertyKey: unknown,
+    descriptor?: PropertyDescriptor
   ): any {
     let active = 0;
     const queue: Array<() => void> = [];
@@ -57,8 +62,8 @@ export function Bulkhead(options: BulkheadOptions): any {
       }
     };
 
-    return decorateMethod(descriptor, LayerRank.BULKHEAD, (next) =>
-      async function (this: any, ...args: any[]) {
+    return decorateMethod('Bulkhead', propertyKey, descriptor, LayerRank.BULKHEAD, (next) =>
+      async (invocation) => {
         if (active < maxConcurrent) {
           active++;
         } else if (queue.length < maxQueue) {
@@ -68,7 +73,7 @@ export function Bulkhead(options: BulkheadOptions): any {
         }
 
         try {
-          return await next.apply(this, args);
+          return await next(invocation);
         } finally {
           release();
         }

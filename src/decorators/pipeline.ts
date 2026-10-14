@@ -27,16 +27,30 @@ export const LayerRank = {
 export type Method = (...args: any[]) => any;
 
 /**
- * Receives the next (inner) step and returns the function that replaces it.
+ * The state of one call travelling through the pipeline.
+ */
+export interface Invocation {
+  thisArg: any;
+  args: any[];
+  /**
+   * Set once an outer layer stopped waiting for the inner ones (e.g. the relay
+   * timed out). Inner layers must not start new work, such as another retry.
+   */
+  abandoned: boolean;
+}
+
+export type Step = (invocation: Invocation) => any;
+
+/**
+ * Receives the next (inner) step and returns the step that replaces it.
  * Layers are re-applied whenever a layer is added, so any state shared
  * between calls must live outside of this function.
  */
-export type Layer = (next: Method) => Method;
+export type Layer = (next: Step) => Step;
 
 interface Pipeline {
   original: Method;
-  layers: { rank: number; wrap: Layer }[];
-  composed: Method;
+  layers: ReadonlyArray<{ rank: number; wrap: Layer }>;
 }
 
 const PIPELINE = Symbol('surge-kit.pipeline');
@@ -53,53 +67,84 @@ export function getOriginalMethod(method: Method): Method {
 }
 
 /**
- * Adds a layer to the method's pipeline, creating the pipeline on first use.
- * Returns the function to install as the method.
+ * Whether the method's pipeline already has a layer of the given rank.
+ */
+export function hasLayer(method: Method, rank: number): boolean {
+  return getPipeline(method)?.layers.some((layer) => layer.rank === rank) ?? false;
+}
+
+/**
+ * Returns a new entry point with the layer added to the method's pipeline.
+ * Pipelines are never changed in place, so a decorated method shared with
+ * another class (e.g. a mixin) is not affected by decorating the copy.
  */
 export function addLayer(method: Method, rank: number, wrap: Layer): Method {
   const existing = getPipeline(method);
-  const pipeline: Pipeline = existing ?? { original: method, layers: [], composed: method };
+  const pipeline: Pipeline = {
+    original: existing?.original ?? method,
+    layers: [...(existing?.layers ?? []), { rank, wrap }],
+  };
 
-  pipeline.layers.push({ rank, wrap });
   // Lower ranks sit closer to the original method. The sort is stable, so
   // among equal ranks a layer added later wraps the ones added before it.
-  pipeline.composed = [...pipeline.layers]
+  const original = pipeline.original;
+  const composed = [...pipeline.layers]
     .sort((a, b) => a.rank - b.rank)
-    .reduce((next, layer) => layer.wrap(next), pipeline.original);
-
-  if (existing) {
-    return method;
-  }
+    .reduce<Step>(
+      (next, layer) => layer.wrap(next),
+      (invocation) => original.apply(invocation.thisArg, invocation.args)
+    );
 
   const entry = function (this: any, ...args: any[]) {
-    return pipeline.composed.apply(this, args);
+    return composed({ thisArg: this, args, abandoned: false });
   };
-  Object.defineProperty(entry, 'name', { value: method.name });
+  Object.defineProperty(entry, 'name', { value: original.name });
   (entry as any)[PIPELINE] = pipeline;
   return entry;
+}
+
+/**
+ * Throws a clear error when a decorator is used as a TC39 standard decorator
+ * (TypeScript without `experimentalDecorators`), which passes a context
+ * object instead of a property key and descriptor.
+ */
+export function assertLegacyDecorator(decorator: string, propertyKeyOrContext: unknown): void {
+  if (typeof propertyKeyOrContext === 'object' && propertyKeyOrContext !== null) {
+    throw new TypeError(
+      `@${decorator}: surge-kit decorators require "experimentalDecorators": true in tsconfig.json.`
+    );
+  }
 }
 
 /**
  * Applies a layer to a decorated method.
  */
 export function decorateMethod(
-  descriptor: PropertyDescriptor,
+  decorator: string,
+  propertyKey: unknown,
+  descriptor: PropertyDescriptor | undefined,
   rank: number,
   wrap: Layer
 ): PropertyDescriptor {
+  assertLegacyDecorator(decorator, propertyKey);
+  if (!descriptor || typeof descriptor.value !== 'function') {
+    throw new TypeError(`@${decorator} can only be applied to methods.`);
+  }
+
   descriptor.value = addLayer(descriptor.value, rank, wrap);
   return descriptor;
 }
 
 /**
- * Applies a layer to every method on a class prototype accepted by `filter`.
+ * Applies a layer to every method on a class prototype accepted by `filter`,
+ * which receives the method as currently installed (possibly decorated).
  * Returns how many methods were decorated.
  */
 export function decorateClassMethods(
   constructor: { prototype: any },
   rank: number,
   wrap: (methodName: string) => Layer,
-  filter: (original: Method) => boolean = () => true
+  filter: (method: Method) => boolean = () => true
 ): number {
   const prototype = constructor.prototype;
   let decorated = 0;
@@ -109,7 +154,7 @@ export function decorateClassMethods(
 
     const descriptor = Object.getOwnPropertyDescriptor(prototype, methodName);
     if (!descriptor || typeof descriptor.value !== 'function') continue;
-    if (!filter(getOriginalMethod(descriptor.value))) continue;
+    if (!filter(descriptor.value)) continue;
 
     descriptor.value = addLayer(descriptor.value, rank, wrap(methodName));
     Object.defineProperty(prototype, methodName, descriptor);
@@ -131,18 +176,20 @@ export function isAsyncFunction(fn: Method): boolean {
  * `onError`, preserving the synchronous or asynchronous nature of the result.
  */
 export function callWithErrorHandler(
-  next: Method,
-  thisArg: any,
-  args: any[],
+  next: Step,
+  invocation: Invocation,
   onError: (error: Error) => any
 ): any {
+  let result: any;
   try {
-    const result = next.apply(thisArg, args);
-    if (result && typeof result.then === 'function') {
-      return (result as Promise<any>).catch(onError);
-    }
-    return result;
+    result = next(invocation);
   } catch (error) {
     return onError(error as Error);
   }
+
+  if (result && typeof result.then === 'function') {
+    // Adopt any thenable, not only Promises (which always have `catch`).
+    return Promise.resolve(result).catch(onError);
+  }
+  return result;
 }
