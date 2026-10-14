@@ -1,4 +1,16 @@
 import { Relay } from '../relay';
+import {
+  assertLegacyDecorator,
+  decorateClassMethods,
+  decorateMethod,
+  getOriginalMethod,
+  hasLayer,
+  isAsyncFunction,
+  Layer,
+  LayerRank,
+} from './pipeline';
+
+export const NO_ASYNC_METHODS_WARNING = 'SURGE_KIT_NO_ASYNC_METHODS';
 
 /**
  * Decorator to protect a method or all methods in a class with a Relay (Circuit Breaker).
@@ -21,6 +33,12 @@ import { Relay } from '../relay';
  * 
  * If you need to protect a method that returns a Promise but is not declared as `async`,
  * apply `@UseRelay` directly to that method instead of at the class level.
+ *
+ * If no async method is found (e.g. the code was compiled to a target below ES2017),
+ * a process warning with code `SURGE_KIT_NO_ASYNC_METHODS` is emitted.
+ *
+ * Methods that already have a method-level `@UseRelay` keep it and are not
+ * protected a second time by the class-level one.
  * 
  * @example
  * // Method decoration
@@ -64,41 +82,47 @@ import { Relay } from '../relay';
 export function UseRelay(relay?: Relay): any {
   return function (
     target: any,
-    propertyKey?: string,
+    propertyKey?: unknown,
     descriptor?: PropertyDescriptor
   ): any {
+    assertLegacyDecorator('UseRelay', propertyKey);
     const relayInstance = relay || Relay.getDefault();
 
-    if (descriptor && propertyKey) {
-      const originalMethod = descriptor.value;
+    const layer: Layer = (next) => async (invocation) => {
+      try {
+        return await relayInstance.run(() => next(invocation));
+      } finally {
+        // Once the relay settles (including on timeout) nobody is waiting for
+        // the inner layers anymore, so e.g. @Retry stops retrying.
+        invocation.abandoned = true;
+      }
+    };
 
-      descriptor.value = async function (...args: any[]) {
-        return relayInstance.run(originalMethod.bind(this), ...args);
-      };
-
-      return descriptor;
+    if (propertyKey !== undefined) {
+      return decorateMethod('UseRelay', propertyKey, descriptor, LayerRank.RELAY, layer);
     }
 
-    const prototype = target.prototype;
-    const methodNames = Object.getOwnPropertyNames(prototype);
-
-    for (const methodName of methodNames) {
-      if (methodName === 'constructor') continue;
-
-      const methodDescriptor = Object.getOwnPropertyDescriptor(prototype, methodName);
-      
-      if (methodDescriptor && typeof methodDescriptor.value === 'function') {
-        const originalMethod = methodDescriptor.value;
-        const isAsync = originalMethod.constructor.name === 'AsyncFunction';
-
-        if (isAsync) {
-          methodDescriptor.value = async function (...args: any[]) {
-            return relayInstance.run(originalMethod.bind(this), ...args);
-          };
-
-          Object.defineProperty(prototype, methodName, methodDescriptor);
-        }
+    let asyncMethods = 0;
+    decorateClassMethods(target, LayerRank.RELAY, () => layer, (method) => {
+      if (!isAsyncFunction(getOriginalMethod(method))) {
+        return false;
       }
+      asyncMethods++;
+      // A method-level @UseRelay takes precedence over the class-level one;
+      // protecting it twice would count each failure twice.
+      return !hasLayer(method, LayerRank.RELAY);
+    });
+
+    // Async detection relies on the `async` keyword surviving compilation.
+    // Warn instead of silently leaving the class unprotected.
+    if (asyncMethods === 0) {
+      process.emitWarning(
+        `surge-kit: no async methods found on class "${target.name}", so none were protected. ` +
+          'Class-level decoration only wraps methods declared with `async` ' +
+          '(code compiled to a target below ES2017 has none). ' +
+          'Apply @UseRelay to individual methods instead.',
+        { code: NO_ASYNC_METHODS_WARNING }
+      );
     }
 
     return target;

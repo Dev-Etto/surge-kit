@@ -22,6 +22,7 @@ Protecting your applications from failures in external services shouldn't requir
 * **⚡ Extremely Lightweight:** Zero dependencies. The library size is tiny.
 * **🔌 Modern API:** A clean and intuitive API that uses `async/await` and `...rest parameters`.
 * **✨ TypeScript Decorators:** Use `@UseRelay` and `@Fallback` decorators for clean, declarative circuit breaker protection.
+* **🧰 Resilience Toolkit:** `@Retry`, `@Bulkhead`, `@RateLimit` and `@Cache` decorators that combine with the circuit breaker in any order.
 * **🛡️ Resilience (Fail-Fast):** Prevents your application from hanging while trying to call services that are already offline by failing quickly.
 * **🎧 Observability:** Emits events so you can log and monitor the health of your circuits (using `EventEmitter`).
 * **🎯 Native TypeScript:** Written entirely in TypeScript for an excellent developer experience.
@@ -36,7 +37,7 @@ npm install surge-kit
 
 ### Basic Usage
 ```ts
-import { Relay, RelayOpenError } from 'surge-kit';
+import { Relay, RelayOpenError, RelayTimeoutError } from 'surge-kit';
 
 // 1. Create an instance
 const relay = new Relay();
@@ -55,6 +56,8 @@ try {
   // 4. Handle open-circuit errors
   if (error instanceof RelayOpenError) {
     console.warn('Shipping service unavailable, failing fast.');
+  } else if (error instanceof RelayTimeoutError) {
+    console.warn(`Shipping service took longer than ${error.timeout}ms.`);
   } else {
     console.error('Call failed:', error.message);
   }
@@ -121,6 +124,9 @@ class ApiService {
 }
 ```
 
+> [!NOTE]
+> Class-level decoration only wraps methods declared with `async`, so synchronous helpers keep their behavior. A method that returns a Promise without `async` is not wrapped, so decorate it with `@UseRelay` directly. If a class has no `async` methods (for example, code compiled to a target below ES2017), a `SURGE_KIT_NO_ASYNC_METHODS` process warning is emitted instead of failing silently.
+
 **Using Default Instance:**
 ```ts
 import { Relay, UseRelay } from 'surge-kit';
@@ -166,8 +172,8 @@ class ApiService {
 }
 ```
 
-> [!IMPORTANT]
-> **Decorator Order Matters!** Always place `@Fallback` **above** `@UseRelay`. Decorators execute from bottom to top, so `@Fallback` (outer) must wrap `@UseRelay` (inner) to properly catch errors including `RelayOpenError`.
+> [!NOTE]
+> **Decorator order doesn't matter.** Every surge-kit decorator plugs into a fixed pipeline, so a method behaves the same however its decorators are written. See [Combining decorators](#-combining-decorators). Writing them in pipeline order (`@Fallback` on top) is still the most readable.
 
 ### `@RelayClass(relayInstance)`
 
@@ -216,9 +222,153 @@ const api = new PrimaryApi();
 await api.getData(); // Returns 'Cached data'
 ```
 
+## 🧰 Resilience Decorators
+
+Besides the circuit breaker, surge-kit ships decorators for the other common resilience patterns. They work on their own or together with `@UseRelay` and `@Fallback`. Methods decorated with `@Retry`, `@Bulkhead` or `@RateLimit` always return a Promise, while `@Cache` keeps synchronous methods synchronous. Invalid options throw a `TypeError` when the class is defined.
+
+### `@Retry(options)`
+
+Retries a failed call before the error propagates, for transient failures such as a momentary network blip.
+
+```ts
+import { Retry, UseRelay } from 'surge-kit';
+
+class ApiService {
+  // Up to 3 attempts, waiting 100ms and then 200ms between them.
+  // The relay only counts a failure if all 3 attempts fail.
+  @Retry({ attempts: 3, delay: 100, backoff: 2 })
+  @UseRelay()
+  async fetchData() {
+    // ... network call
+  }
+}
+```
+
+| Option | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `attempts` | `number` | — | Maximum number of attempts, including the first call. |
+| `delay` | `number` | `0` | Milliseconds to wait before the first retry. |
+| `backoff` | `number` | `1` | Multiplier applied to the delay after each retry (`2` doubles it). |
+| `maxDelay` | `number` | `Infinity` | Upper bound for the delay between attempts. |
+| `retryIf` | `(error, attempt) => boolean` | `() => true` | Return `false` for errors that should not be retried (e.g. validation errors). |
+
+> [!NOTE]
+> Retries always run **inside** `@UseRelay`, so nothing is retried while the circuit is `OPEN`. The relay's `executionTimeout` covers the whole sequence of attempts, including the delays, so size it accordingly. Once it expires, no further attempt is started.
+
+### `@Bulkhead(options)`
+
+Limits how many calls of a method can run at the same time, so a slow dependency cannot exhaust your application's resources. Calls over the limit fail fast with a `BulkheadRejectedError` without invoking the method.
+
+```ts
+import { Bulkhead } from 'surge-kit';
+
+class PaymentService {
+  // At most 10 payments in flight; up to 5 more wait for a free slot.
+  @Bulkhead({ maxConcurrent: 10, maxQueue: 5 })
+  async processPayment() {
+    // ...
+  }
+}
+```
+
+| Option | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `maxConcurrent` | `number` | — | Maximum number of calls running at once. |
+| `maxQueue` | `number` | `0` | Calls allowed to wait for a free slot (FIFO). `0` rejects as soon as the limit is reached. |
+
+A slot is freed when the call returns to its caller, including when `@UseRelay` times it out. The timed-out operation can't be cancelled and may still be running, but holding its slot would lock the method for good if it never settles.
+
+### `@RateLimit(options)`
+
+Enforces a client-side rate limit, so you respect the quotas of external APIs. It uses a sliding window: at most `limit` calls start within any `windowMs` interval. Calls over the limit fail with a `RateLimitExceededError`, which exposes `retryAfterMs`, without invoking the method.
+
+```ts
+import { RateLimit } from 'surge-kit';
+
+class ExternalApiService {
+  // At most 50 calls per minute.
+  @RateLimit({ limit: 50, windowMs: 60000 })
+  async fetchThirdPartyData() {
+    // ...
+  }
+}
+```
+
+| Option | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `limit` | `number` | — | Maximum number of calls within the window. |
+| `windowMs` | `number` | — | Window length in milliseconds. |
+
+Rejected calls don't consume the limit, and a call retried by `@Retry` counts once.
+
+> [!NOTE]
+> The `@Bulkhead` and `@RateLimit` limits are shared by **all instances** of the class, because they protect the downstream resource, not an object.
+
+### `@Cache(options)`
+
+Memoizes results in memory for `ttl` milliseconds, keyed by the arguments. The most resilient call is the one you don't have to make.
+
+```ts
+import { Cache, UseRelay } from 'surge-kit';
+
+class ProductService {
+  // Calls with the same id within 5 seconds return the cached result.
+  @Cache({ ttl: 5000 })
+  @UseRelay()
+  async getProductDetails(id: string) {
+    // ...
+  }
+}
+```
+
+| Option | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `ttl` | `number` | — | Milliseconds a result stays cached (at most `2147483647`, about 24.8 days). |
+| `key` | `(...args) => string` | `defaultCacheKey` | Builds the cache key from the arguments. Throw to skip the cache for a call. |
+| `maxSize` | `number` | `Infinity` | Maximum entries per instance; the least recently used one is evicted. |
+
+- Only successful results are cached. Errors and `@Fallback` results never are.
+- Concurrent calls with the same key share the same pending Promise.
+- Cache hits skip every other layer, so cached data is still served while the circuit is `OPEN`.
+- Each instance has its own cache, and expired entries are removed automatically.
+- The default key (`defaultCacheKey`, exported) encodes primitives, arrays, plain objects and valid `Date`s, and keeps `undefined`, `null`, `NaN`, `Infinity`, `-0` and bigints apart. Any other argument could collide with a different value, so the call goes through uncached. That covers class instances, `Map`, `Set`, typed arrays, `Buffer`, functions, symbols, invalid dates and circular objects. Pass a `key` to cache those, e.g. `key: (user) => user.id`.
+
+This is a small resilience cache, not a replacement for a shared store like Redis.
+
+### 🧩 Combining decorators
+
+Decorators can be stacked in any order. surge-kit always applies them in this order, from the outside in:
+
+```
+@Fallback → @Cache → @Bulkhead → @RateLimit → @UseRelay → @Retry → method
+```
+
+- **`@Fallback`** is outermost. It handles every error, including `RelayOpenError`, `BulkheadRejectedError` and `RateLimitExceededError`, and its results are never cached.
+- **`@Cache`** hits skip everything below it.
+- **`@Bulkhead`** and **`@RateLimit`** reject before the relay, so their rejections don't open the circuit.
+- **`@Retry`** runs inside the relay, so the relay only counts a call whose attempts all failed.
+
+```ts
+class CatalogService {
+  @Fallback('cachedCatalog')
+  @Cache({ ttl: 5000 })
+  @Bulkhead({ maxConcurrent: 20 })
+  @RateLimit({ limit: 100, windowMs: 60000 })
+  @UseRelay()
+  @Retry({ attempts: 3, delay: 100, backoff: 2 })
+  async getCatalog(category: string) {
+    // ...
+  }
+
+  async cachedCatalog(error: Error, category: string) {
+    // ...
+  }
+}
+```
+
 ## 🔄 Fallback without Decorators (`relay.register`)
 
-If you can't use decorators, you can register a fallback implementation for your methods.
+If you can't use decorators, you can register a fallback implementation for your methods. `register` only applies to functions passed directly to `relay.run`. For methods protected with `@UseRelay`, use `@Fallback` or `@FallbackClass`.
 
 ```ts
 const relay = new Relay();
@@ -237,6 +387,8 @@ relay.register(primary, fallback);
 // When you run primary.getData, it will use the fallback on failure
 const result = await relay.run(primary.getData); // Returns 'Cached Data'
 ```
+
+`register` replaces each registered method on the primary object with a copy bound to it, so pass `primary.getData` directly. Don't call `.bind()`, because it creates a new function that has no registered fallback. Fallback methods are also called with their own object as `this`.
 
 ## 📚 API and Usage Patterns
 
@@ -286,8 +438,8 @@ You can customize the breaker's behavior by passing an options object to the con
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `failureThreshold` | `number` | `5` | The number of consecutive failures needed to open the circuit. |
-| `coolDownPeriod` | `number` | `30000` | The time in milliseconds the circuit stays `OPEN` before moving to `HALF_OPEN`. |
-| `executionTimeout` | `number` | `10000` | The maximum time in milliseconds the function can run before being considered a failure. |
+| `coolDownPeriod` | `number` | `30000` | The time in milliseconds the circuit stays `OPEN` before moving to `HALF_OPEN`. In `HALF_OPEN` a single trial call is let through, and concurrent calls are rejected with `RelayOpenError` until it settles. Only the trial call's result closes or reopens the circuit. |
+| `executionTimeout` | `number` | `10000` | The maximum time in milliseconds the function can run before being considered a failure. Timed-out calls reject with `RelayTimeoutError`. |
 | `useExponentialBackoff` | `boolean` | `false` | If `true`, the `coolDownPeriod` will increase exponentially after each consecutive failure. |
 | `maxCooldown` | `number` | `600000` | The maximum `coolDownPeriod` in milliseconds when using exponential backoff. |
 | `onFallback` | `(err: Error) => Promise<TFallback>` | `null` | A fallback function to execute when the circuit is `OPEN` or a call fails. |

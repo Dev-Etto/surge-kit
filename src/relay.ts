@@ -6,7 +6,8 @@ import {
   InternalOptions,
   RelayMetrics,
 } from './types';
-import { RelayOpenError } from './errors';
+import { RelayOpenError, RelayTimeoutError } from './errors';
+import { clampTimerDelay } from './timers';
 
 export class Relay<TFallback = any> extends EventEmitter {
   private static defaultInstance: Relay | null = null;
@@ -19,6 +20,7 @@ export class Relay<TFallback = any> extends EventEmitter {
   #state: RelayState = RelayState.CLOSED;
   #consecutiveOpenCount = 0;
   #coolDownTimer: NodeJS.Timeout | null = null;
+  #trialInFlight = false;
 
   readonly #options: InternalOptions<TFallback>;
   #fallbackRegistry = new Map<(...args: any[]) => any, (...args: any[]) => any>();
@@ -80,6 +82,10 @@ export class Relay<TFallback = any> extends EventEmitter {
   /**
    * Registers a primary implementation and its fallback.
    * Useful when you can't use decorators.
+   *
+   * When objects are given, each primary method with a same-named fallback is
+   * replaced on the primary object by a copy bound to it, so it can be passed
+   * directly as `relay.run(primary.method)` without `.bind()`.
    * @param primary The primary object or function.
    * @param fallback The fallback object or function.
    */
@@ -92,10 +98,16 @@ export class Relay<TFallback = any> extends EventEmitter {
     if (typeof primary === 'function' && typeof fallback === 'function') {
       this.#fallbackRegistry.set(primary, fallback);
     } else if (typeof primary === 'object' && typeof fallback === 'object') {
-      const methodNames =
-        Object.getPrototypeOf(primary) === Object.prototype
-          ? Object.getOwnPropertyNames(primary) // For object literals
-          : Object.getOwnPropertyNames(Object.getPrototypeOf(primary)); // For class instances
+      const methodNames = new Set<string>();
+      // Walk the prototype chain so own properties (object literals) and
+      // inherited class methods are both registered.
+      for (
+        let current = primary;
+        current && current !== Object.prototype;
+        current = Object.getPrototypeOf(current)
+      ) {
+        Object.getOwnPropertyNames(current).forEach((name) => methodNames.add(name));
+      }
 
       for (const method of methodNames) {
         if (
@@ -103,7 +115,27 @@ export class Relay<TFallback = any> extends EventEmitter {
           typeof primary[method] === 'function' &&
           typeof fallback[method] === 'function'
         ) {
-          this.#fallbackRegistry.set(primary[method], fallback[method]);
+          // Bind so fallback methods keep access to their own `this`.
+          const boundFallback = fallback[method].bind(fallback);
+          const original = primary[method];
+          this.#fallbackRegistry.set(original, boundFallback);
+
+          // Install a bound copy on the instance so `relay.run(obj.method)`
+          // keeps `this` without `.bind()`, which would create an unregistered function.
+          const own = Object.getOwnPropertyDescriptor(primary, method);
+          const canInstall = own
+            ? own.configurable || own.writable
+            : Object.isExtensible(primary);
+          if (canInstall) {
+            const bound = original.bind(primary);
+            Object.defineProperty(primary, method, {
+              value: bound,
+              writable: own?.writable ?? true,
+              enumerable: own?.enumerable ?? false,
+              configurable: own?.configurable ?? true,
+            });
+            this.#fallbackRegistry.set(bound, boundFallback);
+          }
         }
       }
     }
@@ -119,48 +151,81 @@ export class Relay<TFallback = any> extends EventEmitter {
     ...args: Parameters<T>
   ): Promise<Awaited<ReturnType<T>> | TFallback> {
 
-    if (this.#state === RelayState.OPEN) {
+    // While HALF_OPEN only a single trial call is allowed through; concurrent
+    // calls are rejected as if the relay were still OPEN.
+    if (
+      this.#state === RelayState.OPEN ||
+      (this.#state === RelayState.HALF_OPEN && this.#trialInFlight)
+    ) {
       const openError = new RelayOpenError();
       return this.#executeFallback(fn, openError, args);
     }
 
+    // The trial call's outcome moves the relay to CLOSED or OPEN, so the flag
+    // only needs resetting when HALF_OPEN is entered again.
+    const isTrial = this.#state === RelayState.HALF_OPEN;
+    if (isTrial) {
+      this.#trialInFlight = true;
+    }
+
+    let result: Awaited<ReturnType<T>>;
     try {
-      const result = await this.#runWithTimeout(fn, args);
-      this.#handleSuccess();
-      return result;
+      result = await this.#runWithTimeout(fn, args);
     } catch (error) {
-      this.#handleFailure(error as Error);
+      this.#handleFailure(error as Error, isTrial);
       return this.#executeFallback(fn, error as Error, args);
     }
+
+    // Outside the try: an error thrown by a 'success' listener must not be
+    // counted as a failure of the call.
+    this.#handleSuccess(isTrial);
+    return result;
   }
 
   /**
    * Handles a successful execution.
    */
-  #handleSuccess() {
+  #handleSuccess(isTrial: boolean) {
     this.#successCount++;
     this.#failureCount = 0;
 
-    if (this.#state === RelayState.HALF_OPEN) {
+    // In HALF_OPEN only the trial call decides the outcome; calls that started
+    // before the relay opened and settle late do not.
+    const closing = this.#state === RelayState.HALF_OPEN && isTrial;
+    if (closing) {
       this.#close();
     }
 
+    // State changes happen before any event is emitted, so a throwing
+    // listener cannot leave the relay in an inconsistent state.
+    if (closing) {
+      this.emit(RelayEvents.CLOSE);
+    }
     this.emit(RelayEvents.SUCCESS);
   }
 
   /**
    * Handles a failed execution.
    */
-  #handleFailure(error: Error) {
+  #handleFailure(error: Error, isTrial: boolean) {
     this.#totalFailureCount++;
     this.#failureCount++;
-    this.emit(RelayEvents.FAILURE, error);
 
-    if (
-      this.#failureCount >= this.#options.failureThreshold &&
-      this.#state !== RelayState.OPEN
-    ) {
-      this.#open(error);
+    // A failed trial call in HALF_OPEN reopens the relay immediately,
+    // regardless of the consecutive failure count.
+    const opening =
+      (this.#state === RelayState.HALF_OPEN && isTrial) ||
+      (this.#state === RelayState.CLOSED &&
+        this.#failureCount >= this.#options.failureThreshold);
+    if (opening) {
+      this.#open();
+    }
+
+    // State changes happen before any event is emitted, so a throwing
+    // listener cannot leave the relay stuck (e.g. in HALF_OPEN).
+    this.emit(RelayEvents.FAILURE, error);
+    if (opening) {
+      this.emit(RelayEvents.OPEN, error);
     }
   }
 
@@ -172,15 +237,20 @@ export class Relay<TFallback = any> extends EventEmitter {
     args: Parameters<T>
   ): Promise<ReturnType<T>> {
     const executionPromise = fn(...args);
+    let timer: NodeJS.Timeout | undefined;
 
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => {
+      timer = setTimeout(() => {
         this.#timeoutCount++;
-        reject(new Error('Execution timed out'));
-      }, this.#options.executionTimeout);
+        reject(new RelayTimeoutError(this.#options.executionTimeout));
+      }, clampTimerDelay(this.#options.executionTimeout));
     });
 
-    return Promise.race([executionPromise, timeoutPromise]);
+    // Clear the timer once the race settles so it neither counts a timeout
+    // after a successful call nor keeps the process alive.
+    return Promise.race([executionPromise, timeoutPromise]).finally(() =>
+      clearTimeout(timer)
+    );
   }
 
   /**
@@ -206,17 +276,19 @@ export class Relay<TFallback = any> extends EventEmitter {
   /**
    * Opens the relay (changes state to OPEN) and schedules the cooldown.
    */
-  #open(error: Error) {
+  #open() {
     this.#consecutiveOpenCount++;
     this.#state = RelayState.OPEN;
     this.#lastFailureTime = Date.now();
-    this.emit(RelayEvents.OPEN, error);
 
     const coolDownPeriod = this.#calculateCooldown();
 
     this.#coolDownTimer = setTimeout(() => {
+      this.#coolDownTimer = null;
       this.#halfOpen();
-    }, coolDownPeriod);
+    }, clampTimerDelay(coolDownPeriod));
+    // The cooldown alone should not keep the process alive.
+    this.#coolDownTimer.unref();
   }
 
   /**
@@ -238,14 +310,6 @@ export class Relay<TFallback = any> extends EventEmitter {
     this.#state = RelayState.CLOSED;
     this.#consecutiveOpenCount = 0;
     this.#failureCount = 0;
-
-    if (this.#coolDownTimer) {
-      clearTimeout(this.#coolDownTimer);
-
-      this.#coolDownTimer = null;
-    }
-
-    this.emit(RelayEvents.CLOSE);
   }
 
   /**
@@ -253,6 +317,7 @@ export class Relay<TFallback = any> extends EventEmitter {
    */
   #halfOpen() {
     this.#state = RelayState.HALF_OPEN;
+    this.#trialInFlight = false;
 
     this.emit(RelayEvents.HALF_OPEN);
   }
