@@ -331,7 +331,7 @@ class ServicoProduto {
 - Chamadas simultâneas com a mesma chave compartilham a mesma Promise pendente.
 - Um acerto no cache pula todas as outras camadas, então dados em cache continuam sendo servidos com o circuito `OPEN`.
 - Cada instância tem o próprio cache, e entradas expiradas são removidas automaticamente.
-- A chave padrão (`defaultCacheKey`, exportada) é uma codificação JSON dos argumentos que diferencia `undefined`, `null`, `NaN`, `Infinity`, `-0` e bigints. Argumentos que ela não consegue codificar sem perder informação, como `Map`, `Set`, funções, symbols, objetos circulares e instâncias de classe sem propriedades próprias, fazem a chamada passar sem cache. Passe uma `key` para cachear esses casos.
+- A chave padrão (`defaultCacheKey`, exportada) codifica primitivos, arrays, objetos simples e `Date`s válidas, e diferencia `undefined`, `null`, `NaN`, `Infinity`, `-0` e bigints. Qualquer outro argumento poderia colidir com um valor diferente, então a chamada passa sem cache. Isso inclui instâncias de classe, `Map`, `Set`, typed arrays, `Buffer`, funções, symbols, datas inválidas e objetos circulares. Passe uma `key` para cachear esses casos, ex.: `key: (usuario) => usuario.id`.
 
 É um cache pequeno de resiliência, não um substituto para um armazenamento compartilhado como o Redis.
 

@@ -24,15 +24,15 @@ export interface CacheOptions {
 /**
  * The default `@Cache` key: a JSON encoding of the arguments that keeps
  * values JSON would conflate apart (`undefined`/`null`, `NaN`, `Infinity`,
- * `-0`, bigint). It throws, so the call goes through uncached, for arguments
- * it cannot encode without losing information: functions, symbols, `Map`,
- * `Set`, other non-plain objects without own enumerable properties (and no
- * `toJSON`), and circular structures. Pass a custom `key` for those.
+ * `-0`, bigint). Only primitives, arrays, plain objects and valid `Date`s are
+ * encoded. Anything else (class instances, `Map`, `Set`, typed arrays,
+ * `Buffer`, functions, symbols, invalid dates, circular structures) could
+ * collide with a different value, so it throws and the call goes through
+ * uncached. Pass a custom `key` for those.
  */
 export function defaultCacheKey(...args: any[]): string {
   return JSON.stringify(args, function (this: any, property: string, value: any) {
-    // `value` has already gone through `toJSON` (e.g. Dates); the raw value
-    // is still on the holder.
+    // `value` has already gone through `toJSON`; inspect the raw value.
     const raw = this[property];
 
     switch (typeof raw) {
@@ -48,27 +48,36 @@ export function defaultCacheKey(...args: any[]): string {
       case 'function':
       case 'symbol':
         throw new TypeError(`Cannot build a cache key from a ${typeof raw} argument.`);
+      case 'object':
+        return encodeObject(raw, value);
+      default:
+        return value;
     }
-
-    if (
-      raw !== null &&
-      typeof raw === 'object' &&
-      typeof raw.toJSON !== 'function' &&
-      !Array.isArray(raw)
-    ) {
-      const prototype = Object.getPrototypeOf(raw);
-      const isPlain = prototype === Object.prototype || prototype === null;
-      if (
-        raw instanceof Map ||
-        raw instanceof Set ||
-        (!isPlain && Object.keys(raw).length === 0)
-      ) {
-        throw new TypeError('Cannot build a cache key from this argument without losing information.');
-      }
-    }
-
-    return value;
   });
+}
+
+function encodeObject(raw: object | null, value: any): any {
+  if (raw === null || Array.isArray(raw)) {
+    return value;
+  }
+
+  if (raw instanceof Date) {
+    if (Number.isNaN(raw.getTime())) {
+      throw new TypeError('Cannot build a cache key from an invalid Date.');
+    }
+    return { [TAG]: 'date', value: raw.toISOString() };
+  }
+
+  const prototype = Object.getPrototypeOf(raw);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError(
+      'Cannot build a cache key from a non-plain object; pass a custom `key` to @Cache.'
+    );
+  }
+  if (Object.prototype.hasOwnProperty.call(raw, TAG)) {
+    throw new TypeError(`Cannot build a cache key from an object with a "${TAG}" property.`);
+  }
+  return value;
 }
 
 const TAG = '__surgeKitCacheKey';

@@ -331,7 +331,7 @@ class ProductService {
 - Concurrent calls with the same key share the same pending Promise.
 - Cache hits skip every other layer, so cached data is still served while the circuit is `OPEN`.
 - Each instance has its own cache, and expired entries are removed automatically.
-- The default key (`defaultCacheKey`, exported) is a JSON encoding of the arguments that keeps `undefined`, `null`, `NaN`, `Infinity`, `-0` and bigints apart. Arguments it can't encode without losing information, such as `Map`, `Set`, functions, symbols, circular objects and class instances without own properties, make the call go through uncached. Pass a `key` to cache those.
+- The default key (`defaultCacheKey`, exported) encodes primitives, arrays, plain objects and valid `Date`s, and keeps `undefined`, `null`, `NaN`, `Infinity`, `-0` and bigints apart. Any other argument could collide with a different value, so the call goes through uncached. That covers class instances, `Map`, `Set`, typed arrays, `Buffer`, functions, symbols, invalid dates and circular objects. Pass a `key` to cache those, e.g. `key: (user) => user.id`.
 
 This is a small resilience cache, not a replacement for a shared store like Redis.
 

@@ -1,4 +1,4 @@
-import { Relay, RelayOpenError, RelayState, RelayTimeoutError } from './index';
+import { Relay, RelayEvents, RelayOpenError, RelayState, RelayTimeoutError } from './index';
 
 jest.useFakeTimers();
 
@@ -546,6 +546,53 @@ describe('Relay stale calls in HALF_OPEN', () => {
     settleTrial.resolve('trial ok');
     await expect(trial).resolves.toBe('trial ok');
     expect(relay.state).toBe(RelayState.CLOSED);
+  });
+});
+
+describe('Relay event listeners', () => {
+  let relay: Relay;
+
+  afterEach(() => {
+    relay.cleanup();
+    jest.clearAllTimers();
+  });
+
+  it('should still reopen when a failure listener throws during the trial call', async () => {
+    relay = new Relay({ failureThreshold: 1, coolDownPeriod: 1000 });
+    await expect(relay.run(mockFailureFn)).rejects.toThrow('Failure');
+    jest.advanceTimersByTime(1000);
+
+    relay.on(RelayEvents.FAILURE, () => { throw new Error('listener bug'); });
+    await expect(relay.run(mockFailureFn)).rejects.toThrow('listener bug');
+    expect(relay.state).toBe(RelayState.OPEN);
+
+    relay.removeAllListeners();
+    jest.advanceTimersByTime(1000);
+    await expect(relay.run(mockSuccessFn)).resolves.toBe('success');
+    expect(relay.state).toBe(RelayState.CLOSED);
+  });
+
+  it('should still close when a close or success listener throws', async () => {
+    relay = new Relay({ failureThreshold: 1, coolDownPeriod: 1000 });
+    await expect(relay.run(mockFailureFn)).rejects.toThrow('Failure');
+    jest.advanceTimersByTime(1000);
+
+    relay.on(RelayEvents.CLOSE, () => { throw new Error('listener bug'); });
+    await expect(relay.run(mockSuccessFn)).rejects.toThrow('listener bug');
+    expect(relay.state).toBe(RelayState.CLOSED);
+    expect(relay.getMetrics()).toMatchObject({ successes: 1, failures: 1 });
+  });
+
+  it('should keep emitting events in the same order', async () => {
+    relay = new Relay({ failureThreshold: 1, coolDownPeriod: 1000 });
+    const events: string[] = [];
+    Object.values(RelayEvents).forEach((event) => relay.on(event, () => events.push(event)));
+
+    await expect(relay.run(mockFailureFn)).rejects.toThrow('Failure');
+    jest.advanceTimersByTime(1000);
+    await relay.run(mockSuccessFn);
+
+    expect(events).toEqual(['failure', 'open', 'halfOpen', 'close', 'success']);
   });
 });
 

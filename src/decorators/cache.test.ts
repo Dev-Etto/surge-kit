@@ -218,18 +218,35 @@ describe('@Cache', () => {
       expect(defaultCacheKey(...first)).not.toBe(defaultCacheKey(...second));
     });
 
-    it('should encode dates and class instances with own properties', () => {
-      expect(defaultCacheKey(new Date(0))).toBe(defaultCacheKey(new Date(0)));
-      expect(defaultCacheKey(new Date(0))).not.toBe(defaultCacheKey(new Date(1)));
-      expect(defaultCacheKey(new Point(1, 2))).not.toBe(defaultCacheKey(new Point(2, 1)));
+    it.each([
+      ['a valid Date and its ISO string', [new Date(0)], [new Date(0).toISOString()]],
+      ['two dates', [new Date(0)], [new Date(1)]],
+      ['a plain object and an array with the same entries', [{ 0: 1, 1: 2 }], [[1, 2]]],
+    ])('should also tell apart %s', (_, first, second) => {
+      expect(defaultCacheKey(...first)).not.toBe(defaultCacheKey(...second));
+    });
+
+    it('should encode equal plain values to the same key', () => {
+      expect(defaultCacheKey({ a: [1, { b: new Date(0) }] }, null)).toBe(
+        defaultCacheKey({ a: [1, { b: new Date(0) }] }, null)
+      );
+      expect(defaultCacheKey(Object.assign(Object.create(null), { a: 1 }))).toBe(
+        defaultCacheKey({ a: 1 })
+      );
     });
 
     it.each([
       ['a Map', new Map([[1, 2]])],
+      ['a Map nested in a plain object', { inner: new Map() }],
       ['a Set', new Set([1])],
       ['a function', () => 1],
       ['a symbol', Symbol('s')],
       ['an instance without own properties', new Opaque()],
+      ['an instance with own properties', new Point(1, 2)],
+      ['an invalid Date', new Date(NaN)],
+      ['a typed array', new Uint8Array([1, 2])],
+      ['a Buffer', Buffer.from([7])],
+      ['an object spoofing the internal tag', { __surgeKitCacheKey: 'undefined' }],
     ])('should refuse %s so the call goes uncached', (_, value) => {
       expect(() => defaultCacheKey(value)).toThrow(TypeError);
     });
