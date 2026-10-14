@@ -1,4 +1,7 @@
 import { Relay } from '../relay';
+import { getInnerSlot } from './inner-method';
+
+export const NO_ASYNC_METHODS_WARNING = 'SURGE_KIT_NO_ASYNC_METHODS';
 
 /**
  * Decorator to protect a method or all methods in a class with a Relay (Circuit Breaker).
@@ -21,6 +24,9 @@ import { Relay } from '../relay';
  * 
  * If you need to protect a method that returns a Promise but is not declared as `async`,
  * apply `@UseRelay` directly to that method instead of at the class level.
+ *
+ * If no async method is found (e.g. the code was compiled to a target below ES2017),
+ * a process warning with code `SURGE_KIT_NO_ASYNC_METHODS` is emitted.
  * 
  * @example
  * // Method decoration
@@ -70,37 +76,61 @@ export function UseRelay(relay?: Relay): any {
     const relayInstance = relay || Relay.getDefault();
 
     if (descriptor && propertyKey) {
-      const originalMethod = descriptor.value;
-
-      descriptor.value = async function (...args: any[]) {
-        return relayInstance.run(originalMethod.bind(this), ...args);
-      };
-
+      descriptor.value = protect(descriptor.value, relayInstance);
       return descriptor;
     }
 
     const prototype = target.prototype;
-    const methodNames = Object.getOwnPropertyNames(prototype);
+    let wrappedCount = 0;
 
-    for (const methodName of methodNames) {
+    for (const methodName of Object.getOwnPropertyNames(prototype)) {
       if (methodName === 'constructor') continue;
 
       const methodDescriptor = Object.getOwnPropertyDescriptor(prototype, methodName);
-      
+
       if (methodDescriptor && typeof methodDescriptor.value === 'function') {
-        const originalMethod = methodDescriptor.value;
-        const isAsync = originalMethod.constructor.name === 'AsyncFunction';
+        const target = getInnerSlot(methodDescriptor.value)?.fn ?? methodDescriptor.value;
+        const isAsync = target.constructor.name === 'AsyncFunction';
 
         if (isAsync) {
-          methodDescriptor.value = async function (...args: any[]) {
-            return relayInstance.run(originalMethod.bind(this), ...args);
-          };
-
+          methodDescriptor.value = protect(methodDescriptor.value, relayInstance);
           Object.defineProperty(prototype, methodName, methodDescriptor);
+          wrappedCount++;
         }
       }
     }
 
+    // Async detection relies on the `async` keyword surviving compilation.
+    // Warn instead of silently leaving the class unprotected.
+    if (wrappedCount === 0) {
+      process.emitWarning(
+        `surge-kit: no async methods found on class "${target.name}", so none were protected. ` +
+          'Class-level decoration only wraps methods declared with `async` ' +
+          '(code compiled to a target below ES2017 has none). ' +
+          'Apply @UseRelay to individual methods instead.',
+        { code: NO_ASYNC_METHODS_WARNING }
+      );
+    }
+
     return target;
   };
+}
+
+/**
+ * Wraps a method with `relay.run()`. If the method is a fallback wrapper, the
+ * method it wraps is protected instead, so the fallback stays outermost.
+ */
+function protect(method: (...args: any[]) => any, relay: Relay): (...args: any[]) => any {
+  const slot = getInnerSlot(method);
+  const target = slot ? slot.fn : method;
+
+  const wrapped = async function (this: any, ...args: any[]) {
+    return relay.run(target.bind(this), ...args);
+  };
+
+  if (slot) {
+    slot.fn = wrapped;
+    return method;
+  }
+  return wrapped;
 }

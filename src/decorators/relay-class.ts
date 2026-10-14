@@ -1,4 +1,5 @@
 import { Relay } from '../relay';
+import { UseRelay } from './use-relay';
 
 /**
  * Class decorator to protect all async methods with a Relay (Circuit Breaker).
@@ -15,6 +16,8 @@ import { Relay } from '../relay';
  * 
  * If you need to protect a method that returns a Promise but is not declared as `async`,
  * apply `@UseRelay` directly to that method.
+ * Like class-level `@UseRelay`, it emits a `SURGE_KIT_NO_ASYNC_METHODS` warning
+ * when no async method is found.
  * 
  * @example
  * ```typescript
@@ -31,28 +34,5 @@ import { Relay } from '../relay';
  * ```
  */
 export function RelayClass(relay: Relay): any {
-  return function <T extends { new (...args: any[]): {} }>(constructor: T): any {
-    const prototype = constructor.prototype;
-    const methodNames = Object.getOwnPropertyNames(prototype);
-
-    for (const methodName of methodNames) {
-      if (methodName === 'constructor') continue;
-
-      const descriptor = Object.getOwnPropertyDescriptor(prototype, methodName);
-      if (descriptor && typeof descriptor.value === 'function') {
-        const originalMethod = descriptor.value;
-        const isAsync = originalMethod.constructor.name === 'AsyncFunction';
-
-        if (isAsync) {
-          descriptor.value = async function (...args: any[]) {
-            return relay.run(originalMethod.bind(this), ...args);
-          };
-
-          Object.defineProperty(prototype, methodName, descriptor);
-        }
-      }
-    }
-
-    return constructor;
-  };
+  return UseRelay(relay);
 }
