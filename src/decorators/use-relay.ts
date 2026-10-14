@@ -1,5 +1,5 @@
 import { Relay } from '../relay';
-import { getInnerSlot } from './inner-method';
+import { decorateClassMethods, decorateMethod, isAsyncFunction, Layer, LayerRank } from './pipeline';
 
 export const NO_ASYNC_METHODS_WARNING = 'SURGE_KIT_NO_ASYNC_METHODS';
 
@@ -74,35 +74,20 @@ export function UseRelay(relay?: Relay): any {
     descriptor?: PropertyDescriptor
   ): any {
     const relayInstance = relay || Relay.getDefault();
+    const layer: Layer = (next) =>
+      async function (this: any, ...args: any[]) {
+        return relayInstance.run(next.bind(this), ...args);
+      };
 
     if (descriptor && propertyKey) {
-      descriptor.value = protect(descriptor.value, relayInstance);
-      return descriptor;
+      return decorateMethod(descriptor, LayerRank.RELAY, layer);
     }
 
-    const prototype = target.prototype;
-    let wrappedCount = 0;
-
-    for (const methodName of Object.getOwnPropertyNames(prototype)) {
-      if (methodName === 'constructor') continue;
-
-      const methodDescriptor = Object.getOwnPropertyDescriptor(prototype, methodName);
-
-      if (methodDescriptor && typeof methodDescriptor.value === 'function') {
-        const target = getInnerSlot(methodDescriptor.value)?.fn ?? methodDescriptor.value;
-        const isAsync = target.constructor.name === 'AsyncFunction';
-
-        if (isAsync) {
-          methodDescriptor.value = protect(methodDescriptor.value, relayInstance);
-          Object.defineProperty(prototype, methodName, methodDescriptor);
-          wrappedCount++;
-        }
-      }
-    }
+    const protectedCount = decorateClassMethods(target, LayerRank.RELAY, () => layer, isAsyncFunction);
 
     // Async detection relies on the `async` keyword surviving compilation.
     // Warn instead of silently leaving the class unprotected.
-    if (wrappedCount === 0) {
+    if (protectedCount === 0) {
       process.emitWarning(
         `surge-kit: no async methods found on class "${target.name}", so none were protected. ` +
           'Class-level decoration only wraps methods declared with `async` ' +
@@ -114,23 +99,4 @@ export function UseRelay(relay?: Relay): any {
 
     return target;
   };
-}
-
-/**
- * Wraps a method with `relay.run()`. If the method is a fallback wrapper, the
- * method it wraps is protected instead, so the fallback stays outermost.
- */
-function protect(method: (...args: any[]) => any, relay: Relay): (...args: any[]) => any {
-  const slot = getInnerSlot(method);
-  const target = slot ? slot.fn : method;
-
-  const wrapped = async function (this: any, ...args: any[]) {
-    return relay.run(target.bind(this), ...args);
-  };
-
-  if (slot) {
-    slot.fn = wrapped;
-    return method;
-  }
-  return wrapped;
 }

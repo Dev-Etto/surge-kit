@@ -1,4 +1,4 @@
-import { attachInnerSlot, InnerMethodSlot } from './inner-method';
+import { callWithErrorHandler, decorateClassMethods, LayerRank } from './pipeline';
 
 /**
  * Class decorator to define a fallback class.
@@ -45,61 +45,24 @@ export function FallbackClass<T extends { new (...args: any[]): {} }>(
   FallbackClass: T
 ): any {
   return function <U extends { new (...args: any[]): {} }>(constructor: U): any {
+    // One fallback instance per primary instance, created on first failure.
     const fallbackInstanceSymbol = Symbol('fallbackInstance');
-    const prototype = constructor.prototype;
-    const methodNames = Object.getOwnPropertyNames(prototype);
 
-    for (const methodName of methodNames) {
-      if (methodName === 'constructor') continue;
+    decorateClassMethods(constructor, LayerRank.FALLBACK, (methodName) => (next) =>
+      function (this: any, ...args: any[]) {
+        return callWithErrorHandler(next, this, args, (error) => {
+          this[fallbackInstanceSymbol] ??= new FallbackClass();
+          const fallbackInstance = this[fallbackInstanceSymbol];
+          const method = fallbackInstance[methodName];
 
-      const descriptor = Object.getOwnPropertyDescriptor(prototype, methodName);
-      if (descriptor && typeof descriptor.value === 'function') {
-        const slot: InnerMethodSlot = { fn: descriptor.value };
-
-        descriptor.value = function (...args: any[]) {
-          const getFallback = () => {
-            if (!(this as any)[fallbackInstanceSymbol]) {
-              (this as any)[fallbackInstanceSymbol] = new FallbackClass();
-            }
-            const fallbackInstance = (this as any)[fallbackInstanceSymbol];
-            return {
-              instance: fallbackInstance,
-              method: (fallbackInstance as any)[methodName],
-            };
-          };
-
-          try {
-            const result = slot.fn.apply(this, args);
-
-            // If the result is a Promise, handle async failures
-            if (result && typeof result.then === 'function') {
-              return (result as Promise<any>).catch((error: any) => {
-                const { instance, method } = getFallback();
-                if (typeof method === 'function') {
-                  return method.call(instance, error, ...args);
-                }
-                throw error;
-              });
-            }
-
-            // Otherwise, return the synchronous result
-            return result;
-          } catch (error) {
-            // Handle synchronous failures
-            const { instance, method } = getFallback();
-            if (typeof method === 'function') {
-              return method.call(instance, error, ...args);
-            }
+          if (typeof method !== 'function') {
             throw error;
           }
-        };
-
-        attachInnerSlot(descriptor.value, slot);
-        Object.defineProperty(prototype, methodName, descriptor);
+          return method.call(fallbackInstance, error, ...args);
+        });
       }
-    }
+    );
 
     return constructor;
   };
 }
-
