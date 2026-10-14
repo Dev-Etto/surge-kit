@@ -32,3 +32,19 @@ export class BulkheadRejectedError extends Error {
   }
 }
 
+/**
+ * Error thrown by `@RateLimit` when the call limit for the window is reached.
+ */
+export class RateLimitExceededError extends Error {
+  constructor(
+    public readonly limit: number,
+    public readonly windowMs: number,
+    /** Milliseconds until a call would be accepted again. */
+    public readonly retryAfterMs: number
+  ) {
+    super(
+      `Rate limit of ${limit} calls per ${windowMs}ms exceeded. Call was not attempted.`
+    );
+    this.name = 'RateLimitExceededError';
+  }
+}
