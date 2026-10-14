@@ -92,10 +92,16 @@ export class Relay<TFallback = any> extends EventEmitter {
     if (typeof primary === 'function' && typeof fallback === 'function') {
       this.#fallbackRegistry.set(primary, fallback);
     } else if (typeof primary === 'object' && typeof fallback === 'object') {
-      const methodNames =
-        Object.getPrototypeOf(primary) === Object.prototype
-          ? Object.getOwnPropertyNames(primary) // For object literals
-          : Object.getOwnPropertyNames(Object.getPrototypeOf(primary)); // For class instances
+      const methodNames = new Set<string>();
+      // Walk the prototype chain so own properties (object literals) and
+      // inherited class methods are both registered.
+      for (
+        let current = primary;
+        current && current !== Object.prototype;
+        current = Object.getPrototypeOf(current)
+      ) {
+        Object.getOwnPropertyNames(current).forEach((name) => methodNames.add(name));
+      }
 
       for (const method of methodNames) {
         if (
@@ -103,7 +109,8 @@ export class Relay<TFallback = any> extends EventEmitter {
           typeof primary[method] === 'function' &&
           typeof fallback[method] === 'function'
         ) {
-          this.#fallbackRegistry.set(primary[method], fallback[method]);
+          // Bind so fallback methods keep access to their own `this`.
+          this.#fallbackRegistry.set(primary[method], fallback[method].bind(fallback));
         }
       }
     }
@@ -156,9 +163,12 @@ export class Relay<TFallback = any> extends EventEmitter {
     this.#failureCount++;
     this.emit(RelayEvents.FAILURE, error);
 
+    // A failed trial call in HALF_OPEN reopens the relay immediately,
+    // regardless of the consecutive failure count.
     if (
-      this.#failureCount >= this.#options.failureThreshold &&
-      this.#state !== RelayState.OPEN
+      this.#state === RelayState.HALF_OPEN ||
+      (this.#state === RelayState.CLOSED &&
+        this.#failureCount >= this.#options.failureThreshold)
     ) {
       this.#open(error);
     }
@@ -172,15 +182,20 @@ export class Relay<TFallback = any> extends EventEmitter {
     args: Parameters<T>
   ): Promise<ReturnType<T>> {
     const executionPromise = fn(...args);
+    let timer: NodeJS.Timeout | undefined;
 
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => {
+      timer = setTimeout(() => {
         this.#timeoutCount++;
         reject(new Error('Execution timed out'));
       }, this.#options.executionTimeout);
     });
 
-    return Promise.race([executionPromise, timeoutPromise]);
+    // Clear the timer once the race settles so it neither counts a timeout
+    // after a successful call nor keeps the process alive.
+    return Promise.race([executionPromise, timeoutPromise]).finally(() =>
+      clearTimeout(timer)
+    );
   }
 
   /**
@@ -215,8 +230,11 @@ export class Relay<TFallback = any> extends EventEmitter {
     const coolDownPeriod = this.#calculateCooldown();
 
     this.#coolDownTimer = setTimeout(() => {
+      this.#coolDownTimer = null;
       this.#halfOpen();
     }, coolDownPeriod);
+    // The cooldown alone should not keep the process alive.
+    this.#coolDownTimer.unref();
   }
 
   /**
@@ -238,12 +256,6 @@ export class Relay<TFallback = any> extends EventEmitter {
     this.#state = RelayState.CLOSED;
     this.#consecutiveOpenCount = 0;
     this.#failureCount = 0;
-
-    if (this.#coolDownTimer) {
-      clearTimeout(this.#coolDownTimer);
-
-      this.#coolDownTimer = null;
-    }
 
     this.emit(RelayEvents.CLOSE);
   }

@@ -359,6 +359,86 @@ describe('Relay Register', () => {
     
     await expect(relay.run(primary.exec)).resolves.toBe('fallback');
   });
+
+  it('should preserve "this" in registered fallback class methods', async () => {
+    class Primary {
+      async exec() { throw new Error('fail'); }
+    }
+    class Fallback {
+      private cached = 'cached-value';
+      async exec() { return this.cached; }
+    }
+
+    const p = new Primary();
+    relay.register(p, new Fallback());
+
+    await expect(relay.run(p.exec)).resolves.toBe('cached-value');
+  });
+
+  it('should register inherited methods of class instances', async () => {
+    class BasePrimary {
+      async exec() { throw new Error('fail'); }
+    }
+    class Primary extends BasePrimary {}
+    class Fallback {
+      async exec() { return 'fallback'; }
+    }
+
+    const p = new Primary();
+    relay.register(p, new Fallback());
+
+    await expect(relay.run(p.exec)).resolves.toBe('fallback');
+  });
+});
+
+describe('Relay Regressions', () => {
+  let relay: Relay;
+
+  afterEach(() => {
+    relay.cleanup();
+    jest.clearAllTimers();
+  });
+
+  it('should not count a timeout after a call that already succeeded', async () => {
+    relay = new Relay({ executionTimeout: 100 });
+
+    await expect(relay.run(mockSuccessFn)).resolves.toBe('success');
+    jest.advanceTimersByTime(200);
+
+    expect(relay.getMetrics().timeouts).toBe(0);
+  });
+
+  it('should not leave execution timeout timers pending after a call settles', async () => {
+    relay = new Relay({ executionTimeout: 100 });
+
+    await relay.run(mockSuccessFn);
+    await expect(relay.run(mockFailureFn)).rejects.toThrow('Failure');
+
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it('should reopen on a HALF_OPEN failure even if a late success reset the failure count', async () => {
+    relay = new Relay({ failureThreshold: 2, coolDownPeriod: 1000 });
+
+    let resolveSlow!: (value: string) => void;
+    const slowCall = relay.run(
+      () => new Promise<string>((resolve) => { resolveSlow = resolve; })
+    );
+
+    await expect(relay.run(mockFailureFn)).rejects.toThrow('Failure');
+    await expect(relay.run(mockFailureFn)).rejects.toThrow('Failure');
+    expect(relay.state).toBe(RelayState.OPEN);
+
+    // An in-flight call started while CLOSED succeeds while the relay is OPEN.
+    resolveSlow('late-success');
+    await expect(slowCall).resolves.toBe('late-success');
+
+    jest.advanceTimersByTime(1000);
+    expect(relay.state).toBe(RelayState.HALF_OPEN);
+
+    await expect(relay.run(mockFailureFn)).rejects.toThrow('Failure');
+    expect(relay.state).toBe(RelayState.OPEN);
+  });
 });
 
 describe('Relay Cleanup', () => {
