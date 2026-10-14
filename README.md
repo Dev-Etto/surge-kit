@@ -36,7 +36,7 @@ npm install surge-kit
 
 ### Basic Usage
 ```ts
-import { Relay, RelayOpenError } from 'surge-kit';
+import { Relay, RelayOpenError, RelayTimeoutError } from 'surge-kit';
 
 // 1. Create an instance
 const relay = new Relay();
@@ -55,6 +55,8 @@ try {
   // 4. Handle open-circuit errors
   if (error instanceof RelayOpenError) {
     console.warn('Shipping service unavailable, failing fast.');
+  } else if (error instanceof RelayTimeoutError) {
+    console.warn(`Shipping service took longer than ${error.timeout}ms.`);
   } else {
     console.error('Call failed:', error.message);
   }
@@ -121,6 +123,9 @@ class ApiService {
 }
 ```
 
+> [!NOTE]
+> Class-level decoration only wraps methods declared with `async`, so synchronous helpers keep their behavior. A method that returns a Promise without `async` is not wrapped, so decorate it with `@UseRelay` directly. If a class has no `async` methods (for example, code compiled to a target below ES2017), a `SURGE_KIT_NO_ASYNC_METHODS` process warning is emitted instead of failing silently.
+
 **Using Default Instance:**
 ```ts
 import { Relay, UseRelay } from 'surge-kit';
@@ -166,8 +171,8 @@ class ApiService {
 }
 ```
 
-> [!IMPORTANT]
-> **Decorator Order Matters!** Always place `@Fallback` **above** `@UseRelay`. Decorators execute from bottom to top, so `@Fallback` (outer) must wrap `@UseRelay` (inner) to properly catch errors including `RelayOpenError`.
+> [!NOTE]
+> **Decorator order doesn't matter.** Fallback decorators (`@Fallback`, `@FallbackClass`) always stay outermost: the relay counts the failure first, and the fallback then handles it, including `RelayOpenError`. Placing `@Fallback` above `@UseRelay` is still the recommended, most readable order.
 
 ### `@RelayClass(relayInstance)`
 
@@ -238,6 +243,8 @@ relay.register(primary, fallback);
 const result = await relay.run(primary.getData); // Returns 'Cached Data'
 ```
 
+`register` replaces each registered method on the primary object with a copy bound to it, so pass `primary.getData` directly. Don't call `.bind()`, because it creates a new function that has no registered fallback. Fallback methods are also called with their own object as `this`.
+
 ## 📚 API and Usage Patterns
 
 1. `run(fn, ...args)`
@@ -286,8 +293,8 @@ You can customize the breaker's behavior by passing an options object to the con
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `failureThreshold` | `number` | `5` | The number of consecutive failures needed to open the circuit. |
-| `coolDownPeriod` | `number` | `30000` | The time in milliseconds the circuit stays `OPEN` before moving to `HALF_OPEN`. |
-| `executionTimeout` | `number` | `10000` | The maximum time in milliseconds the function can run before being considered a failure. |
+| `coolDownPeriod` | `number` | `30000` | The time in milliseconds the circuit stays `OPEN` before moving to `HALF_OPEN`. In `HALF_OPEN` a single trial call is let through, and concurrent calls are rejected with `RelayOpenError` until it settles. |
+| `executionTimeout` | `number` | `10000` | The maximum time in milliseconds the function can run before being considered a failure. Timed-out calls reject with `RelayTimeoutError`. |
 | `useExponentialBackoff` | `boolean` | `false` | If `true`, the `coolDownPeriod` will increase exponentially after each consecutive failure. |
 | `maxCooldown` | `number` | `600000` | The maximum `coolDownPeriod` in milliseconds when using exponential backoff. |
 | `onFallback` | `(err: Error) => Promise<TFallback>` | `null` | A fallback function to execute when the circuit is `OPEN` or a call fails. |
