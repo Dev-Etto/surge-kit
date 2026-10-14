@@ -1,4 +1,4 @@
-import { Relay, RelayOpenError, RelayState } from './index';
+import { Relay, RelayOpenError, RelayState, RelayTimeoutError } from './index';
 
 jest.useFakeTimers();
 
@@ -93,6 +93,20 @@ describe('Relay', () => {
 
     await expect(executionPromise).rejects.toThrow('Execution timed out');
     expect(relay.state).toBe(RelayState.OPEN);
+  });
+
+  it('should reject timeouts with a RelayTimeoutError', async () => {
+    relay = new Relay({ executionTimeout: 100 });
+
+    const promise = relay.run(() => new Promise(() => {}));
+    jest.advanceTimersByTime(100);
+
+    await expect(promise).rejects.toBeInstanceOf(RelayTimeoutError);
+    await expect(promise).rejects.toMatchObject({
+      name: 'RelayTimeoutError',
+      message: 'Execution timed out',
+      timeout: 100,
+    });
   });
 
   it('should update lastFailureTime after opening', async () => {
@@ -375,6 +389,36 @@ describe('Relay Register', () => {
     await expect(relay.run(p.exec)).resolves.toBe('cached-value');
   });
 
+  it('should keep "this" when running a registered method without .bind()', async () => {
+    class Primary {
+      private value = 'primary-value';
+      async exec() { return this.value; }
+    }
+    class Fallback {
+      async exec() { return 'fallback'; }
+    }
+
+    const p = new Primary();
+    relay.register(p, new Fallback());
+
+    await expect(relay.run(p.exec)).resolves.toBe('primary-value');
+  });
+
+  it('should still use the fallback for frozen primaries it cannot rebind', async () => {
+    class Primary {
+      async exec() { throw new Error('fail'); }
+    }
+    const fallback = { async exec() { return 'fallback'; } };
+
+    const instance = Object.freeze(new Primary());
+    const literal = Object.freeze({ async exec() { throw new Error('fail'); } });
+    relay.register(instance, fallback);
+    relay.register(literal, fallback);
+
+    await expect(relay.run(instance.exec)).resolves.toBe('fallback');
+    await expect(relay.run(literal.exec)).resolves.toBe('fallback');
+  });
+
   it('should register inherited methods of class instances', async () => {
     class BasePrimary {
       async exec() { throw new Error('fail'); }
@@ -388,6 +432,70 @@ describe('Relay Register', () => {
     relay.register(p, new Fallback());
 
     await expect(relay.run(p.exec)).resolves.toBe('fallback');
+  });
+});
+
+describe('Relay HALF_OPEN trial call', () => {
+  let relay: Relay;
+
+  const openAndCoolDown = async () => {
+    await expect(relay.run(mockFailureFn)).rejects.toThrow('Failure');
+    jest.advanceTimersByTime(1000);
+    expect(relay.state).toBe(RelayState.HALF_OPEN);
+  };
+
+  beforeEach(() => {
+    relay = new Relay({ failureThreshold: 1, coolDownPeriod: 1000 });
+  });
+
+  afterEach(() => {
+    relay.cleanup();
+    jest.clearAllTimers();
+  });
+
+  it('should allow a single trial call and reject concurrent ones', async () => {
+    await openAndCoolDown();
+
+    let resolveProbe!: (value: string) => void;
+    const probeFn = jest.fn(() => new Promise<string>((resolve) => { resolveProbe = resolve; }));
+    const probe = relay.run(probeFn);
+
+    await expect(relay.run(mockSuccessFn)).rejects.toThrow(RelayOpenError);
+    expect(mockSuccessFn).not.toHaveBeenCalled();
+
+    resolveProbe('probe-ok');
+    await expect(probe).resolves.toBe('probe-ok');
+    expect(relay.state).toBe(RelayState.CLOSED);
+
+    await expect(relay.run(mockSuccessFn)).resolves.toBe('success');
+  });
+
+  it('should use the fallback for calls rejected during the trial call', async () => {
+    relay = new Relay({
+      failureThreshold: 1,
+      coolDownPeriod: 1000,
+      onFallback: async (error) => error.name,
+    });
+    await expect(relay.run(mockFailureFn)).resolves.toBe('Error');
+    jest.advanceTimersByTime(1000);
+
+    const probe = relay.run(() => new Promise<string>(() => {}));
+
+    await expect(relay.run(mockSuccessFn)).resolves.toBe('RelayOpenError');
+
+    jest.advanceTimersByTime(10000);
+    await probe;
+  });
+
+  it('should allow a new trial call after a failed one reopens and cools down', async () => {
+    await openAndCoolDown();
+
+    await expect(relay.run(mockFailureFn)).rejects.toThrow('Failure');
+    expect(relay.state).toBe(RelayState.OPEN);
+
+    jest.advanceTimersByTime(1000);
+    await expect(relay.run(mockSuccessFn)).resolves.toBe('success');
+    expect(relay.state).toBe(RelayState.CLOSED);
   });
 });
 

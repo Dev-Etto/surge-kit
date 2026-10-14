@@ -6,7 +6,7 @@ import {
   InternalOptions,
   RelayMetrics,
 } from './types';
-import { RelayOpenError } from './errors';
+import { RelayOpenError, RelayTimeoutError } from './errors';
 
 export class Relay<TFallback = any> extends EventEmitter {
   private static defaultInstance: Relay | null = null;
@@ -19,6 +19,7 @@ export class Relay<TFallback = any> extends EventEmitter {
   #state: RelayState = RelayState.CLOSED;
   #consecutiveOpenCount = 0;
   #coolDownTimer: NodeJS.Timeout | null = null;
+  #trialInFlight = false;
 
   readonly #options: InternalOptions<TFallback>;
   #fallbackRegistry = new Map<(...args: any[]) => any, (...args: any[]) => any>();
@@ -80,6 +81,10 @@ export class Relay<TFallback = any> extends EventEmitter {
   /**
    * Registers a primary implementation and its fallback.
    * Useful when you can't use decorators.
+   *
+   * When objects are given, each primary method with a same-named fallback is
+   * replaced on the primary object by a copy bound to it, so it can be passed
+   * directly as `relay.run(primary.method)` without `.bind()`.
    * @param primary The primary object or function.
    * @param fallback The fallback object or function.
    */
@@ -110,7 +115,26 @@ export class Relay<TFallback = any> extends EventEmitter {
           typeof fallback[method] === 'function'
         ) {
           // Bind so fallback methods keep access to their own `this`.
-          this.#fallbackRegistry.set(primary[method], fallback[method].bind(fallback));
+          const boundFallback = fallback[method].bind(fallback);
+          const original = primary[method];
+          this.#fallbackRegistry.set(original, boundFallback);
+
+          // Install a bound copy on the instance so `relay.run(obj.method)`
+          // keeps `this` without `.bind()`, which would create an unregistered function.
+          const own = Object.getOwnPropertyDescriptor(primary, method);
+          const canInstall = own
+            ? own.configurable || own.writable
+            : Object.isExtensible(primary);
+          if (canInstall) {
+            const bound = original.bind(primary);
+            Object.defineProperty(primary, method, {
+              value: bound,
+              writable: own?.writable ?? true,
+              enumerable: own?.enumerable ?? false,
+              configurable: own?.configurable ?? true,
+            });
+            this.#fallbackRegistry.set(bound, boundFallback);
+          }
         }
       }
     }
@@ -126,9 +150,20 @@ export class Relay<TFallback = any> extends EventEmitter {
     ...args: Parameters<T>
   ): Promise<Awaited<ReturnType<T>> | TFallback> {
 
-    if (this.#state === RelayState.OPEN) {
+    // While HALF_OPEN only a single trial call is allowed through; concurrent
+    // calls are rejected as if the relay were still OPEN.
+    if (
+      this.#state === RelayState.OPEN ||
+      (this.#state === RelayState.HALF_OPEN && this.#trialInFlight)
+    ) {
       const openError = new RelayOpenError();
       return this.#executeFallback(fn, openError, args);
+    }
+
+    // The trial call's outcome moves the relay to CLOSED or OPEN, so the flag
+    // only needs resetting when HALF_OPEN is entered again.
+    if (this.#state === RelayState.HALF_OPEN) {
+      this.#trialInFlight = true;
     }
 
     try {
@@ -187,7 +222,7 @@ export class Relay<TFallback = any> extends EventEmitter {
     const timeoutPromise = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
         this.#timeoutCount++;
-        reject(new Error('Execution timed out'));
+        reject(new RelayTimeoutError(this.#options.executionTimeout));
       }, this.#options.executionTimeout);
     });
 
@@ -265,6 +300,7 @@ export class Relay<TFallback = any> extends EventEmitter {
    */
   #halfOpen() {
     this.#state = RelayState.HALF_OPEN;
+    this.#trialInFlight = false;
 
     this.emit(RelayEvents.HALF_OPEN);
   }
