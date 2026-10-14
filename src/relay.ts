@@ -7,6 +7,7 @@ import {
   RelayMetrics,
 } from './types';
 import { RelayOpenError, RelayTimeoutError } from './errors';
+import { clampTimerDelay } from './timers';
 
 export class Relay<TFallback = any> extends EventEmitter {
   private static defaultInstance: Relay | null = null;
@@ -162,50 +163,69 @@ export class Relay<TFallback = any> extends EventEmitter {
 
     // The trial call's outcome moves the relay to CLOSED or OPEN, so the flag
     // only needs resetting when HALF_OPEN is entered again.
-    if (this.#state === RelayState.HALF_OPEN) {
+    const isTrial = this.#state === RelayState.HALF_OPEN;
+    if (isTrial) {
       this.#trialInFlight = true;
     }
 
+    let result: Awaited<ReturnType<T>>;
     try {
-      const result = await this.#runWithTimeout(fn, args);
-      this.#handleSuccess();
-      return result;
+      result = await this.#runWithTimeout(fn, args);
     } catch (error) {
-      this.#handleFailure(error as Error);
+      this.#handleFailure(error as Error, isTrial);
       return this.#executeFallback(fn, error as Error, args);
     }
+
+    // Outside the try: an error thrown by a 'success' listener must not be
+    // counted as a failure of the call.
+    this.#handleSuccess(isTrial);
+    return result;
   }
 
   /**
    * Handles a successful execution.
    */
-  #handleSuccess() {
+  #handleSuccess(isTrial: boolean) {
     this.#successCount++;
     this.#failureCount = 0;
 
-    if (this.#state === RelayState.HALF_OPEN) {
+    // In HALF_OPEN only the trial call decides the outcome; calls that started
+    // before the relay opened and settle late do not.
+    const closing = this.#state === RelayState.HALF_OPEN && isTrial;
+    if (closing) {
       this.#close();
     }
 
+    // State changes happen before any event is emitted, so a throwing
+    // listener cannot leave the relay in an inconsistent state.
+    if (closing) {
+      this.emit(RelayEvents.CLOSE);
+    }
     this.emit(RelayEvents.SUCCESS);
   }
 
   /**
    * Handles a failed execution.
    */
-  #handleFailure(error: Error) {
+  #handleFailure(error: Error, isTrial: boolean) {
     this.#totalFailureCount++;
     this.#failureCount++;
-    this.emit(RelayEvents.FAILURE, error);
 
     // A failed trial call in HALF_OPEN reopens the relay immediately,
     // regardless of the consecutive failure count.
-    if (
-      this.#state === RelayState.HALF_OPEN ||
+    const opening =
+      (this.#state === RelayState.HALF_OPEN && isTrial) ||
       (this.#state === RelayState.CLOSED &&
-        this.#failureCount >= this.#options.failureThreshold)
-    ) {
-      this.#open(error);
+        this.#failureCount >= this.#options.failureThreshold);
+    if (opening) {
+      this.#open();
+    }
+
+    // State changes happen before any event is emitted, so a throwing
+    // listener cannot leave the relay stuck (e.g. in HALF_OPEN).
+    this.emit(RelayEvents.FAILURE, error);
+    if (opening) {
+      this.emit(RelayEvents.OPEN, error);
     }
   }
 
@@ -223,7 +243,7 @@ export class Relay<TFallback = any> extends EventEmitter {
       timer = setTimeout(() => {
         this.#timeoutCount++;
         reject(new RelayTimeoutError(this.#options.executionTimeout));
-      }, this.#options.executionTimeout);
+      }, clampTimerDelay(this.#options.executionTimeout));
     });
 
     // Clear the timer once the race settles so it neither counts a timeout
@@ -256,18 +276,17 @@ export class Relay<TFallback = any> extends EventEmitter {
   /**
    * Opens the relay (changes state to OPEN) and schedules the cooldown.
    */
-  #open(error: Error) {
+  #open() {
     this.#consecutiveOpenCount++;
     this.#state = RelayState.OPEN;
     this.#lastFailureTime = Date.now();
-    this.emit(RelayEvents.OPEN, error);
 
     const coolDownPeriod = this.#calculateCooldown();
 
     this.#coolDownTimer = setTimeout(() => {
       this.#coolDownTimer = null;
       this.#halfOpen();
-    }, coolDownPeriod);
+    }, clampTimerDelay(coolDownPeriod));
     // The cooldown alone should not keep the process alive.
     this.#coolDownTimer.unref();
   }
@@ -291,8 +310,6 @@ export class Relay<TFallback = any> extends EventEmitter {
     this.#state = RelayState.CLOSED;
     this.#consecutiveOpenCount = 0;
     this.#failureCount = 0;
-
-    this.emit(RelayEvents.CLOSE);
   }
 
   /**

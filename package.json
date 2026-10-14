@@ -1,7 +1,7 @@
 {
   "name": "surge-kit",
   "version": "0.5.0",
-  "description": "A lightweight, zero-dependency, and modern Circuit Breaker library for Node.js.",
+  "description": "A lightweight, zero-dependency, and modern Circuit Breaker and resilience toolkit for Node.js: retry, bulkhead, rate limit and cache decorators.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "engines": {
@@ -36,6 +36,11 @@
     "production-ready",
     "exponential-backoff",
     "fallback",
+    "retry",
+    "bulkhead",
+    "rate-limit",
+    "cache",
+    "memoize",
     "metrics",
     "network-protection"
   ],

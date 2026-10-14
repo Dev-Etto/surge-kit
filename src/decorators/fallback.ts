@@ -1,4 +1,4 @@
-import { attachInnerSlot, InnerMethodSlot } from './inner-method';
+import { callWithErrorHandler, decorateMethod, LayerRank } from './pipeline';
 
 
 /**
@@ -27,43 +27,28 @@ import { attachInnerSlot, InnerMethodSlot } from './inner-method';
  */
 export function Fallback(fallback: string | ((error: Error, ...args: any[]) => any)): any {
   return function (
-    target: any,
-    propertyKey: string,
-    descriptor: PropertyDescriptor
+    _target: any,
+    propertyKey: unknown,
+    descriptor?: PropertyDescriptor
   ): any {
-    const slot: InnerMethodSlot = { fn: descriptor.value };
+    return decorateMethod('Fallback', propertyKey, descriptor, LayerRank.FALLBACK, (next) => (invocation) =>
+      callWithErrorHandler(next, invocation, (error) => {
+        const { thisArg, args } = invocation;
 
-    descriptor.value = function (...args: any[]) {
-      const executeFallback = (error: Error) => {
-        if (typeof fallback === 'string') {
-          const fallbackMethod = (this as any)[fallback];
-          if (typeof fallbackMethod === 'function') {
-            return fallbackMethod.apply(this, [error, ...args]);
-          } else {
-            throw new Error(`Fallback method '${fallback}' not found on instance.`);
-          }
-        } else if (typeof fallback === 'function') {
-          return fallback(error as Error, ...args);
+        if (typeof fallback === 'function') {
+          return fallback(error, ...args);
         }
-        throw error;
-      };
 
-      try {
-        const result = slot.fn.apply(this, args);
-        // If the result is a Promise, handle async errors
-        if (result && typeof result.then === 'function') {
-          return (result as Promise<any>).catch(executeFallback);
+        if (typeof fallback !== 'string') {
+          throw error;
         }
-        // Otherwise, return the synchronous result
-        return result;
-      } catch (error) {
-        // Handle synchronous errors
-        return executeFallback(error as Error);
-      }
-    };
 
-    attachInnerSlot(descriptor.value, slot);
-
-    return descriptor;
+        const fallbackMethod = thisArg[fallback];
+        if (typeof fallbackMethod !== 'function') {
+          throw new Error(`Fallback method '${fallback}' not found on instance.`);
+        }
+        return fallbackMethod.apply(thisArg, [error, ...args]);
+      })
+    );
   };
 }
