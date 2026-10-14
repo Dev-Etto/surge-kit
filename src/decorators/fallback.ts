@@ -1,3 +1,5 @@
+import { attachInnerSlot, InnerMethodSlot } from './inner-method';
+
 
 /**
  * Decorator to define a fallback method in case of failure.
@@ -29,7 +31,7 @@ export function Fallback(fallback: string | ((error: Error, ...args: any[]) => a
     propertyKey: string,
     descriptor: PropertyDescriptor
   ): any {
-    const originalMethod = descriptor.value;
+    const slot: InnerMethodSlot = { fn: descriptor.value };
 
     descriptor.value = function (...args: any[]) {
       const executeFallback = (error: Error) => {
@@ -47,7 +49,7 @@ export function Fallback(fallback: string | ((error: Error, ...args: any[]) => a
       };
 
       try {
-        const result = originalMethod.apply(this, args);
+        const result = slot.fn.apply(this, args);
         // If the result is a Promise, handle async errors
         if (result && typeof result.then === 'function') {
           return (result as Promise<any>).catch(executeFallback);
@@ -59,6 +61,8 @@ export function Fallback(fallback: string | ((error: Error, ...args: any[]) => a
         return executeFallback(error as Error);
       }
     };
+
+    attachInnerSlot(descriptor.value, slot);
 
     return descriptor;
   };

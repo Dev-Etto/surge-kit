@@ -1,7 +1,8 @@
 import { Relay } from '../relay';
-import { UseRelay } from './use-relay';
+import { NO_ASYNC_METHODS_WARNING, UseRelay } from './use-relay';
 import { Fallback } from './fallback';
 import { RelayOpenError } from '../errors';
+import { RelayState } from '../types';
 import { RelayClass } from './relay-class';
 import { FallbackClass } from './fallback-class';
 
@@ -725,3 +726,129 @@ describe('Fallback Decorator Edge Cases', () => {
     await expect(service.promiseMethod(-1)).resolves.toBe(0);
   });
 });
+
+describe('Decorator composition', () => {
+  let relay: Relay;
+
+  class FallbackService {
+    async getData() {
+      return 'fallback-data';
+    }
+  }
+
+  beforeEach(() => {
+    relay = new Relay({ failureThreshold: 1, coolDownPeriod: 1000 });
+  });
+
+  afterEach(() => {
+    relay.cleanup();
+    jest.clearAllTimers();
+  });
+
+  it.each([
+    ['@RelayClass above @FallbackClass', () => {
+      @RelayClass(relay)
+      @FallbackClass(FallbackService)
+      class Service { async getData(): Promise<string> { throw new Error('fail'); } }
+      return Service;
+    }],
+    ['@FallbackClass above @RelayClass', () => {
+      @FallbackClass(FallbackService)
+      @RelayClass(relay)
+      class Service { async getData(): Promise<string> { throw new Error('fail'); } }
+      return Service;
+    }],
+    ['@UseRelay above @FallbackClass', () => {
+      @UseRelay(relay)
+      @FallbackClass(FallbackService)
+      class Service { async getData(): Promise<string> { throw new Error('fail'); } }
+      return Service;
+    }],
+  ])('should count failures and keep the fallback outermost with %s', async (_, define) => {
+    const Service = define();
+    const service = new Service();
+
+    await expect(service.getData()).resolves.toBe('fallback-data');
+    expect(relay.getMetrics().failures).toBe(1);
+    expect(relay.state).toBe(RelayState.OPEN);
+
+    // Calls rejected by the open relay are still handled by the fallback.
+    await expect(service.getData()).resolves.toBe('fallback-data');
+  });
+
+  it('should count failures with method-level @UseRelay above @Fallback', async () => {
+    class Service {
+      @UseRelay(relay)
+      @Fallback('fallbackMethod')
+      async getData(): Promise<string> {
+        throw new Error('fail');
+      }
+
+      async fallbackMethod(error: Error) {
+        return error.name;
+      }
+    }
+
+    const service = new Service();
+
+    await expect(service.getData()).resolves.toBe('Error');
+    expect(relay.state).toBe(RelayState.OPEN);
+    await expect(service.getData()).resolves.toBe('RelayOpenError');
+  });
+
+  it('should protect through stacked fallback wrappers', async () => {
+    @UseRelay(relay)
+    @FallbackClass(FallbackService)
+    class Service {
+      @Fallback(async () => { throw new Error('inner fallback failed'); })
+      async getData(): Promise<string> {
+        throw new Error('fail');
+      }
+    }
+
+    await expect(new Service().getData()).resolves.toBe('fallback-data');
+    expect(relay.getMetrics().failures).toBe(1);
+  });
+});
+
+describe('Class-level decoration warnings', () => {
+  let relay: Relay;
+  let warnSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    relay = new Relay();
+    warnSpy = jest.spyOn(process, 'emitWarning').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  it('should warn when a class has no async methods to protect', () => {
+    @UseRelay(relay)
+    class NoAsyncService {
+      getData() {
+        return Promise.resolve('data');
+      }
+    }
+
+    expect(new NoAsyncService().getData()).toBeInstanceOf(Promise);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('"NoAsyncService"'),
+      { code: NO_ASYNC_METHODS_WARNING }
+    );
+  });
+
+  it('should not warn when at least one async method is protected', () => {
+    @RelayClass(relay)
+    class AsyncService {
+      async getData() {
+        return 'data';
+      }
+    }
+
+    expect(AsyncService).toBeDefined();
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+});
+

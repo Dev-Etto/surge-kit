@@ -1,3 +1,5 @@
+import { attachInnerSlot, InnerMethodSlot } from './inner-method';
+
 /**
  * Class decorator to define a fallback class.
  * When used with @RelayClass or @UseRelay, if the primary class methods fail,
@@ -52,7 +54,7 @@ export function FallbackClass<T extends { new (...args: any[]): {} }>(
 
       const descriptor = Object.getOwnPropertyDescriptor(prototype, methodName);
       if (descriptor && typeof descriptor.value === 'function') {
-        const originalMethod = descriptor.value;
+        const slot: InnerMethodSlot = { fn: descriptor.value };
 
         descriptor.value = function (...args: any[]) {
           const getFallback = () => {
@@ -67,7 +69,7 @@ export function FallbackClass<T extends { new (...args: any[]): {} }>(
           };
 
           try {
-            const result = originalMethod.apply(this, args);
+            const result = slot.fn.apply(this, args);
 
             // If the result is a Promise, handle async failures
             if (result && typeof result.then === 'function') {
@@ -92,6 +94,7 @@ export function FallbackClass<T extends { new (...args: any[]): {} }>(
           }
         };
 
+        attachInnerSlot(descriptor.value, slot);
         Object.defineProperty(prototype, methodName, descriptor);
       }
     }

@@ -36,7 +36,7 @@ npm install surge-kit
 
 ### Uso Básico
 ```ts
-import { Relay, RelayOpenError } from 'surge-kit';
+import { Relay, RelayOpenError, RelayTimeoutError } from 'surge-kit';
 
 // 1. Crie uma instância
 const relay = new Relay();
@@ -55,6 +55,8 @@ try {
   // 4. Trate erros de circuito aberto
   if (error instanceof RelayOpenError) {
     console.warn('Serviço de frete indisponível, falhando rapidamente.');
+  } else if (error instanceof RelayTimeoutError) {
+    console.warn(`Serviço de frete demorou mais de ${error.timeout}ms.`);
   } else {
     console.error('Chamada falhou:', error.message);
   }
@@ -121,6 +123,9 @@ class ApiService {
 }
 ```
 
+> [!NOTE]
+> A decoração de classe só envolve métodos declarados com `async`, então helpers síncronos mantêm seu comportamento. Um método que retorna uma Promise sem `async` não é envolvido; nesse caso, use `@UseRelay` direto nele. Se a classe não tiver nenhum método `async` (por exemplo, código compilado para um target abaixo de ES2017), um aviso de processo `SURGE_KIT_NO_ASYNC_METHODS` é emitido em vez de falhar em silêncio.
+
 **Usando Instância Padrão:**
 ```ts
 import { Relay, UseRelay } from 'surge-kit';
@@ -166,8 +171,8 @@ class ApiService {
 }
 ```
 
-> [!IMPORTANT]
-> **A Ordem dos Decorators Importa!** Sempre coloque `@Fallback` **acima** de `@UseRelay`. Decorators executam de baixo para cima, então `@Fallback` (externo) deve envolver `@UseRelay` (interno) para capturar erros adequadamente, incluindo `RelayOpenError`.
+> [!NOTE]
+> **A ordem dos decorators não importa.** Os decorators de fallback (`@Fallback`, `@FallbackClass`) ficam sempre por fora: o relay conta a falha primeiro e depois o fallback a trata, inclusive o `RelayOpenError`. Colocar `@Fallback` acima de `@UseRelay` continua sendo a ordem recomendada, por ser a mais legível.
 
 ### `@RelayClass(relayInstance)`
 
@@ -238,6 +243,8 @@ relay.register(primario, fallback);
 const resultado = await relay.run(primario.getData); // Retorna 'Dados em Cache'
 ```
 
+O `register` substitui cada método registrado no objeto primário por uma cópia ligada a ele, então passe `primario.getData` diretamente. Não use `.bind()`, porque ele cria uma nova função que não tem fallback registrado. Os métodos de fallback também são chamados com o próprio objeto como `this`.
+
 ## 📚 API e Padrões de Uso
 
 1. `run(fn, ...args)`
@@ -284,8 +291,8 @@ Você pode personalizar o comportamento do disjuntor passando um objeto de opç�
 | Opção | Tipo | Padrão | Descrição |
 | :--- | :--- | :--- | :--- |
 | `failureThreshold` | `number` | `5` | O número de falhas consecutivas para abrir o circuito. |
-| `coolDownPeriod` | `number` | `30000` | O tempo em milissegundos que o circuito fica `OPEN` antes de ir para `HALF_OPEN`. |
-| `executionTimeout` | `number` | `10000` | O tempo máximo em milissegundos que a função pode executar antes de ser considerada uma falha. |
+| `coolDownPeriod` | `number` | `30000` | O tempo em milissegundos que o circuito fica `OPEN` antes de ir para `HALF_OPEN`. Em `HALF_OPEN` só uma chamada de teste passa, e as chamadas simultâneas são rejeitadas com `RelayOpenError` até ela terminar. |
+| `executionTimeout` | `number` | `10000` | O tempo máximo em milissegundos que a função pode executar antes de ser considerada uma falha. Chamadas que excedem o tempo são rejeitadas com `RelayTimeoutError`. |
 | `useExponentialBackoff` | `boolean` | `false` | Se `true`, o `coolDownPeriod` aumentará exponencialmente após cada falha consecutiva. |
 | `maxCooldown` | `number` | `600000` | O `coolDownPeriod` máximo em milissegundos ao usar o backoff exponencial. |
 | `onFallback` | `(err: Error) => Promise<TFallback>` | `null` | Uma função de contingência (fallback) para executar quando o circuito está `OPEN` ou uma chamada falha. |

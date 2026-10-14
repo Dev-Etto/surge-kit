@@ -28,7 +28,7 @@ The project maintainer (João Neto)[https://github.com/Dev-Etto] reserves the ri
 
 1.  **Fork** the repository (`https://github.com/Dev-Etto/surge-kit/fork`).
 2.  **Clone** your fork: `git clone https://github.com/YourUsername/surge-kit.git`
-3.  **Create a Branch:** `git checkout -b feature/my-feature`
+3.  **Create a Branch:** `git checkout -b feature/my-feature develop`
 4.  **Make your changes** to the code, primarily within the `src/` directory.
 5.  **Add Tests:** If you add a new feature, it *must* include tests. If you fix a bug, add a test that would fail without your fix. Tests are located in `src/` (e.g., `relay.test.ts`).
 6.  **Run Tests and Lint:** Ensure everything is passing before submitting.
@@ -42,4 +42,4 @@ The project maintainer (João Neto)[https://github.com/Dev-Etto] reserves the ri
     *(The `test` and `lint` scripts are defined in `package.json`)*
 7.  **Commit** your changes.
 8.  **Push** to your branch: `git push origin feature/my-feature`
-9.  **Open a Pull Request** to the `main` branch of the `Dev-Etto/surge-kit` repository.
+9.  **Open a Pull Request** to the `develop` branch of the `Dev-Etto/surge-kit` repository.
